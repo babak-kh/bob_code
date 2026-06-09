@@ -8,18 +8,16 @@ use tokio::select;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 
-use crate::agent::{groq, ollama};
-use crate::components::prompt_dialog::{PromptDialogController, PromptDialogEvent, PromptSchema};
+use crate::agent::{groq, ollama, openrouter};
+use crate::commands::{CommandEffect, DialogAction};
+use crate::components::prompt_dialog::{FieldResponse, PromptDialogController, PromptDialogEvent};
+use crate::components::response_block;
 use crate::controller;
-use crate::models::display::ResponseAreaInput;
 use crate::models::model::ChatMessageResponse;
+use crate::service::profile;
 use crate::system_prompt::generate_system_prompt;
 use crate::ui::{PromptController, ResponseAreaController, StatusLineController};
-use crate::{
-    controller::MessageController,
-    prompt::PromptEvent,
-    service::commands::{CommandController, CommandType, TreeCommand},
-};
+use crate::{controller::MessageController, prompt::PromptEvent};
 
 #[derive(PartialEq)]
 enum FocusedPanel {
@@ -28,39 +26,69 @@ enum FocusedPanel {
 }
 
 pub struct App {
+    config_base_path: String,
     name: String,
     version: String,
     prompt: PromptController,
-    controller: MessageController,
+    pub(super) controller: MessageController,
     response_area_controller: ResponseAreaController,
     status_line: StatusLineController,
-    command_controller: CommandController,
     focused: FocusedPanel,
     /// When `Some`, a floating dialog is active and captures all key events.
-    dialog: Option<PromptDialogController>,
+    /// The `DialogAction` records what to do when the user submits.
+    dialog: Option<(PromptDialogController, DialogAction)>,
+    user_profile: profile::UserProfile,
 }
 
 impl App {
     pub fn new() -> Self {
+        let config_base_path = std::env::var("BOB_CODE_CONFIG_PATH").unwrap_or_else(|_| {
+            dirs::config_dir()
+                .unwrap()
+                .join("bob_code")
+                .to_str()
+                .unwrap()
+                .to_string()
+        });
+
+        let mut user_profile = profile::UserProfile::new(config_base_path.clone());
+        user_profile
+            .initialize()
+            .expect("Failed to initialize user profile");
+
+        user_profile
+            .fetch(profile::ProfileDefaults {
+                model: "gpt-oss-120b".to_string(),
+            })
+            .expect("Failed to fetch user profile data");
+
         Self {
             name: env!("CARGO_PKG_NAME").to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            config_base_path,
+            user_profile,
+
             prompt: PromptController::new(),
             controller: MessageController::new(),
             response_area_controller: ResponseAreaController::new(),
             status_line: StatusLineController::new(),
             focused: FocusedPanel::Prompt,
-            command_controller: CommandController::new(),
             dialog: None,
         }
     }
 
     pub async fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) {
         register_models(&mut self.controller).expect("Failed to register models");
-        register_commands(&mut self.command_controller);
+
+        self.controller
+            .set_current_model(self.user_profile.get_model())
+            .expect("Failed to set model from user profile");
+
+        if let Some(name) = self.controller.current_model_name().map(|s| s.to_string()) {
+            self.status_line.set_model_name(name);
+        }
         let _thread_id = self.controller.new_thread();
         self.controller.set_system(generate_system_prompt());
-        println!("thread id: {}", _thread_id);
         let (gpu_info_channel_tx, mut gpu_info_channel_rx) = mpsc::unbounded_channel::<String>();
 
         let (resp_tx, mut resp_rx) = broadcast::channel::<ChatMessageResponse>(1000);
@@ -73,29 +101,33 @@ impl App {
         loop {
             select! {
                 Some(event) = event_stream.next() => {
+                    tracing::info!("Event: {:?}", event);
                     match event {
                         Ok(Event::Key(key_event)) => {
                             // Global quit: Ctrl+C
                             if is_quit(&Event::Key(key_event)) {
+                                self.user_profile.save().expect("Failed to flush user profile data");
                                 break;
                             }
 
                             // If a dialog is open, route all keys to it first.
-                            if let Some(dialog) = &mut self.dialog {
+                            if let Some((dialog, action)) = &mut self.dialog {
                                 match dialog.handle_key(key_event) {
                                     Some(PromptDialogEvent::Submitted(resp)) => {
-                                        let summary = serde_json::to_string_pretty(&resp)
-                                            .unwrap_or_else(|_| "(serialization error)".into());
-                                        tracing::info!("Dialog submitted: {summary}");
-                                        // TODO: forward `resp` to the AI tool-call machinery
+                                        // SAFETY: shadow-borrow action before dialog is consumed
+                                        let action = std::mem::replace(
+                                            action,
+                                            DialogAction::SelectModel,
+                                        );
                                         self.dialog = None;
+                                        self.handle_dialog_submit(resp, action);
                                     }
                                     Some(PromptDialogEvent::Cancelled) => {
                                         self.dialog = None;
                                     }
                                     None => {}
                                 }
-                                terminal.draw(|f| self.ui(f)).unwrap();
+                                self.redraw(terminal);
                                 continue;
                             }
 
@@ -117,7 +149,7 @@ impl App {
                                     }
                                 }
                             }
-                            terminal.draw(|f| self.ui(f)).unwrap();
+                            self.redraw(terminal);
                         }
                         Ok(_) => {}
                         Err(e) => {
@@ -129,13 +161,17 @@ impl App {
                     tracing::info!("Received response: {:?}", resp);
                     if let Some(tool_calls) = resp.tool_calls {
                         self.controller.set_tool_calls(tool_calls.clone());
-                        ResponseAreaInput::tool_call(tool_calls.clone());
+                        let tool_json = serde_json::to_string_pretty(&tool_calls)
+                            .unwrap_or_else(|_| "Failed to serialize tool call".to_string());
+                        self.response_area_controller
+                            .add_block(response_block::tool_block(tool_json));
                         let tool_response = MessageController::handle_tool_calls(tool_calls.as_ref()).await;
                         for resp in &tool_response {
                             self.controller.set_tool_call_response(resp.clone());
-                            self.response_area_controller.add_to_payload(
-                                ResponseAreaInput::tool_response(resp.clone())
-                            ).await;
+                            let resp_json = serde_json::to_string_pretty(resp)
+                                .unwrap_or_else(|_| "Failed to serialize tool response".to_string());
+                            self.response_area_controller
+                                .add_block(response_block::tool_block(resp_json));
                         }
                         let (model, thread) = self.controller.prepare_call("openai/gpt-oss-120b".to_string());
                         let model_clone = model.unwrap().clone();
@@ -148,25 +184,19 @@ impl App {
                         self.controller.set_response(resp.content.clone().unwrap_or_default());
                         continue;
                     }
-                    if let Some(thinking) = resp.thinking {
-                        if !thinking.is_empty() {
-                            self.response_area_controller.add_to_payload(
-                                ResponseAreaInput::assistant_thinking(thinking)
-                            ).await;
-                        }
+                    if let Some(thinking) = resp.thinking && !thinking.is_empty() {
+                            self.response_area_controller
+                                .add_block(response_block::thinking_block(thinking));
                     }
-                    if let Some(content) = resp.content {
-                        if !content.is_empty() {
-                            self.response_area_controller.add_to_payload(
-                                ResponseAreaInput::assistant_content(content)
-                            ).await;
-                        }
+                    if let Some(content) = resp.content && !content.is_empty() {
+                            self.response_area_controller
+                                .add_block(response_block::assistant_block(content));
                     }
-                    terminal.draw(|f| self.ui(f)).unwrap();
+                    self.redraw(terminal);
                 }
                 Some(gpu_info) = gpu_info_channel_rx.recv() => {
                     self.status_line.set_gpu_info(gpu_info);
-                    terminal.draw(|f| self.ui(f)).unwrap();
+                            self.redraw(terminal);
                 }
             }
         }
@@ -189,16 +219,29 @@ impl App {
         self.status_line.render(f, chunks[2]);
 
         // Render the dialog as the topmost layer so it overlays everything.
-        if let Some(dialog) = &self.dialog {
+        if let Some((dialog, _)) = &self.dialog {
             dialog.render(f);
         }
     }
 
-    /// Open a prompt dialog. While open, all key events are captured by the
-    /// dialog and normal prompt / response navigation is suspended.
-    #[allow(dead_code)]
-    pub fn open_dialog(&mut self, schema: PromptSchema) {
-        self.dialog = Some(PromptDialogController::new(schema));
+    /// Apply the response from a submitted dialog based on what opened it.
+    fn handle_dialog_submit(
+        &mut self,
+        resp: crate::components::prompt_dialog::PromptDialogResponse,
+        action: DialogAction,
+    ) {
+        match action {
+            DialogAction::SelectModel => {
+                if let Some(FieldResponse::SingleChoice { value, .. }) = resp.get("model") {
+                    let name = value.clone();
+                    self.controller.set_current_model(name.clone());
+                    self.status_line.set_model_name(name.clone());
+                    self.user_profile.set_model(name.clone());
+                    self.response_area_controller
+                        .add_block(response_block::command_block(format!("Switched to {name}")));
+                }
+            }
+        }
     }
 
     fn handle_focus_change(&mut self) {
@@ -221,23 +264,25 @@ impl App {
         resp_tx: broadcast::Sender<ChatMessageResponse>,
     ) {
         match prompt_event {
-            PromptEvent::Command(name) => {
-                if let Some(thread) = self.controller.get_current_thread() {
-                    let command_response = self.command_controller.execute(&name, thread);
-                    if let Some(response) = command_response {
-                        self.response_area_controller
-                            .add_to_payload(ResponseAreaInput::info_command_output(
-                                response.join("\n"),
-                            ))
-                            .await;
+            PromptEvent::Command { name, args } => {
+                if let Some(cmd) = Self::parse_command(&name, &args) {
+                    let cmd_effect = self.handle_command(cmd, &args);
+                    match cmd_effect {
+                        CommandEffect::None => {}
+                        CommandEffect::ResponseArea(text) => {
+                            self.response_area_controller
+                                .add_block(response_block::command_block(text));
+                        }
+                        CommandEffect::OpenDialog { schema, action } => {
+                            self.dialog = Some((PromptDialogController::new(schema), action));
+                        }
                     }
                 }
             }
             PromptEvent::Submitted(text) => {
                 // Show the user message immediately in the response area
                 self.response_area_controller
-                    .add_to_payload(ResponseAreaInput::user(text.clone()))
-                    .await;
+                    .add_block(response_block::user_block(text.clone()));
 
                 self.controller.set_prompt(text);
                 let (model, thread) = self
@@ -251,6 +296,9 @@ impl App {
             }
         }
     }
+    fn redraw(&mut self, terminal: &mut Terminal<impl Backend>) {
+        terminal.draw(|f| self.ui(f)).unwrap();
+    }
 }
 
 #[derive(Error, Debug)]
@@ -259,29 +307,15 @@ pub enum AppError {
     ModelRegisterationError(String),
 }
 
-fn register_commands(controller: &mut CommandController) {
-    controller.add_command(TreeCommand::new())
-}
-
 fn register_models(controller: &mut controller::MessageController) -> Result<(), AppError> {
     let gemma4_model = ollama::gemma4::GEMMA4Model;
     controller.register_model(Arc::new(gemma4_model));
-    let grok_model = groq::GroqBase::new(
-        groq::GroqModel::GptOss120B,
-        "".to_string(),
-    );
+    let grok_model = groq::GroqBase::new(groq::GroqModel::GptOss120B, "".to_string());
     controller.register_model(Arc::new(grok_model));
+    let openrouter_model =
+        openrouter::OpenRouterBase::new(openrouter::OpenRouterModel::DeepSeekR1, "".to_string());
+    controller.register_model(Arc::new(openrouter_model));
     Ok(())
-}
-
-fn is_command(event: &Event) -> bool {
-    if let Event::Key(key_event) = event {
-        return key_event
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::CONTROL)
-            && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('i'));
-    }
-    false
 }
 
 fn is_quit(event: &Event) -> bool {

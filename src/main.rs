@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+mod commands;
 mod components;
 mod controller;
 mod models;
@@ -13,9 +14,8 @@ use color_eyre::eyre::Result;
 use lazy_static::lazy_static;
 use std::io;
 use std::path::PathBuf;
-use tokio;
 use tracing_error::ErrorLayer;
-use tracing_subscriber::{self, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{self, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -74,8 +74,8 @@ pub fn initialize_logging() -> Result<()> {
         .with_writer(log_file)
         .with_target(false)
         .with_ansi(false);
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("babak_code=debug"));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("babak_code=debug"));
     tracing_subscriber::registry()
         .with(env_filter)
         .with(file_subscriber)

@@ -283,12 +283,14 @@ impl PromptDialogController {
 
     /// Process a key event. Returns `Some(event)` when the dialog terminates.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<PromptDialogEvent> {
+        tracing::info!("Dialog key event: {:?} (active field {})", key, self.active_field);
         match (key.code, key.modifiers) {
             // Global: cancel
             (KeyCode::Esc, _) => return Some(PromptDialogEvent::Cancelled),
 
-            // Global: submit all fields
-            (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+            // Global: submit all fields (Enter or Ctrl+P)
+            (KeyCode::Enter, KeyModifiers::NONE)
+            | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                 return Some(PromptDialogEvent::Submitted(self.collect()));
             }
 
@@ -397,7 +399,7 @@ impl PromptDialogController {
             (KeyCode::Home, _) => *cursor = 0,
             (KeyCode::End, _) => *cursor = value.len(),
             // Enter: advance to next field
-            (KeyCode::Enter, _) => {
+            (KeyCode::Enter, KeyModifiers::CONTROL) => {
                 *active_field = (*active_field + 1) % n_fields;
             }
             _ => {}

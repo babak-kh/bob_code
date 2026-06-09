@@ -47,6 +47,19 @@ impl MessageController {
         }
     }
 
+    pub fn set_current_model(&mut self, model_name: String) -> Result<(), String> {
+        if self.models.contains_key(&model_name) {
+            self.current_model = Some(model_name);
+            return Ok(());
+        } else {
+            return Err(format!("Model '{}' not found", model_name));
+        }
+    }
+
+    pub fn get_model_names(&self) -> Vec<String> {
+        self.models.keys().cloned().collect()
+    }
+
     #[allow(dead_code)]
     pub fn get_current_model(&self) -> Option<&Arc<dyn LLMModel + Send + Sync>> {
         if let Some(model_name) = &self.current_model {
@@ -57,6 +70,10 @@ impl MessageController {
 
     pub fn get_model_by_name(&self, model_name: &str) -> Option<&Arc<dyn LLMModel + Send + Sync>> {
         self.models.get(model_name)
+    }
+
+    pub fn current_model_name(&self) -> Option<&str> {
+        self.current_model.as_deref()
     }
 
     pub fn prepare_call(

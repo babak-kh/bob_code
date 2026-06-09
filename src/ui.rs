@@ -1,6 +1,5 @@
-use crate::components::message_block::MessageBlock;
+use crate::components::response_block::ResponseBlock;
 use crate::components::text_area::{TextArea, default_block};
-use crate::models::display::ResponseAreaInput;
 use crate::prompt::{ContentManager, PromptEvent};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Style};
@@ -92,14 +91,20 @@ impl PromptController {
 // ---------------------------------------------------------------------------
 
 pub struct StatusLineController {
+    model_name: String,
     gpu_info: String,
 }
 
 impl StatusLineController {
     pub fn new() -> Self {
         Self {
+            model_name: String::new(),
             gpu_info: "GPU: waiting…".to_string(),
         }
+    }
+
+    pub fn set_model_name(&mut self, name: String) {
+        self.model_name = name;
     }
 
     pub fn set_gpu_info(&mut self, raw: String) {
@@ -107,10 +112,23 @@ impl StatusLineController {
     }
 
     pub fn render(&self, f: &mut Frame, area: Rect) {
-        let line = ratatui::text::Line::from(vec![
-            Span::styled(" ⬡ ", Style::default().fg(Color::Green)),
-            Span::styled(self.gpu_info.clone(), Style::default().fg(Color::DarkGray)),
-        ]);
+        let mut spans: Vec<Span> = Vec::new();
+
+        if !self.model_name.is_empty() {
+            spans.push(Span::styled(
+                format!(" {} ", self.model_name),
+                Style::default().fg(Color::Cyan),
+            ));
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        }
+
+        spans.push(Span::styled(" ⬡ ", Style::default().fg(Color::Green)));
+        spans.push(Span::styled(
+            self.gpu_info.clone(),
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        let line = ratatui::text::Line::from(spans);
         f.render_widget(Paragraph::new(line), area);
     }
 }
@@ -139,9 +157,9 @@ fn parse_nvidia_smi(raw: &str) -> String {
 
 /// Manages the scrollable list of conversation message blocks.
 ///
-/// Each [`MessageBlock`] is a separate, independently rendered widget so that
-/// collapsible blocks (thinking traces, tool calls) can change height without
-/// affecting the rest of the layout.
+/// Each block implements [`ResponseBlock`] so that collapsible blocks
+/// (thinking traces, tool calls) can change height without affecting the
+/// rest of the layout.
 ///
 /// # Scroll model
 /// `scroll_offset` is a **line** count (same as the old `Paragraph::scroll`).
@@ -166,7 +184,7 @@ fn parse_nvidia_smi(raw: &str) -> String {
 /// | `Space`/`Enter`| Toggle collapse on the selected block         |
 pub struct ResponseAreaController {
     /// All conversation blocks in chronological order.
-    blocks: Vec<MessageBlock>,
+    blocks: Vec<Box<dyn ResponseBlock>>,
     /// Line-level scroll offset (0 = top of all content).
     scroll_offset: u16,
     /// Index of the currently keyboard-selected block.
@@ -200,24 +218,24 @@ impl ResponseAreaController {
         self.is_focused = focused;
     }
 
-    /// Append a new input chunk.
+    /// Append a new block.
     ///
-    /// Consecutive chunks with the **same** [`MessageKind`] are merged into the
-    /// existing last block (streaming merge) so we don't create one entry per token.
-    /// A different kind always starts a new block.
-    pub async fn add_to_payload(&mut self, input: ResponseAreaInput) {
+    /// Consecutive blocks with the **same** [`MessageKind`] are merged into
+    /// the existing last block (streaming merge) so we don't create one entry
+    /// per token.  A different kind always starts a new block.
+    pub fn add_block(&mut self, mut block: Box<dyn ResponseBlock>) {
         // Streaming merge: same kind as the last block → append in place.
+        let kind = block.block_kind();
         if let Some(last) = self.blocks.last_mut() {
-            if last.kind == input.kind {
-                last.append(&input.content);
+            if last.block_kind() == kind {
+                let text = block.text().to_string();
+                last.append_text(&text);
                 return;
             }
         }
 
         // New block.
         let new_idx = self.blocks.len();
-        let mut block = MessageBlock::new(input.kind, input.content);
-        // Highlight if this block lands on the currently selected index.
         if new_idx == self.selected_block {
             block.set_selected(true);
         }
@@ -293,10 +311,13 @@ impl ResponseAreaController {
                 }
                 true
             }
-            // `Space` or `Enter` — toggle collapse on the selected block.
+            // `Space` or `Enter` — toggle collapse on the selected block
+            // (only if the block is collapsible).
             (KeyCode::Char(' '), _) | (KeyCode::Enter, _) => {
                 if let Some(block) = self.blocks.get_mut(self.selected_block) {
-                    block.toggle_collapse();
+                    if block.is_collapsible() {
+                        block.toggle_collapse();
+                    }
                 }
                 true
             }
