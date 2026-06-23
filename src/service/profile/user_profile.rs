@@ -33,13 +33,14 @@ pub struct UserProfile {
 
 impl UserProfile {
     pub fn new(path: String) -> Self {
-        Self {
+        let mut s = Self {
             path,
             ..Default::default()
-        }
+        };
+        s.initialize().unwrap();
+        s
     }
 
-    #[must_use]
     pub fn initialize(&mut self) -> Result<(), String> {
         if !Path::new(&self.path).exists() {
             std::fs::create_dir_all(&self.path).map_err(|e| e.to_string())?;

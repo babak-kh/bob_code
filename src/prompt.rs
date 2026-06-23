@@ -47,7 +47,7 @@ impl ContentManager {
             None => self.lines.push(c.to_string()),
             Some(line) => line.insert(self.cursor_pos.0, c),
         }
-        self.cursor_pos.0 += 1;
+        self.cursor_pos.0 += c.len_utf8();
     }
 
     pub fn pop(&mut self) {
@@ -61,13 +61,56 @@ impl ContentManager {
             self.cursor_pos.0 = self.lines[self.cursor_pos.1].len();
             self.lines[self.cursor_pos.1].push_str(&current);
         } else {
-            self.lines[self.cursor_pos.1].remove(self.cursor_pos.0 - 1);
-            self.cursor_pos.0 -= 1;
+            let line = &mut self.lines[self.cursor_pos.1];
+            let prev = line[..self.cursor_pos.0]
+                .chars()
+                .last()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            self.cursor_pos.0 -= prev;
+            line.remove(self.cursor_pos.0);
         }
-        // Exit command mode if the leading '/' has been removed.
-        if self.command_mode && !self.lines[0].starts_with('/') {
-            self.command_mode = false;
+        self.update_command_mode();
+    }
+
+    /// Insert `text` at the cursor. Newlines split into multiple buffer lines.
+    pub fn insert_text(&mut self, text: &str) {
+        self.cancel_history_browse();
+        if text.is_empty() {
+            return;
         }
+
+        let segments: Vec<&str> = text.split('\n').collect();
+
+        if let Some(line) = self.lines.get_mut(self.cursor_pos.1) {
+            line.insert_str(self.cursor_pos.0, segments[0]);
+            self.cursor_pos.0 += segments[0].len();
+        }
+
+        for segment in segments.iter().skip(1) {
+            let tail = self.lines[self.cursor_pos.1].split_off(self.cursor_pos.0);
+            let mut new_line = segment.to_string();
+            new_line.push_str(&tail);
+            self.lines.insert(self.cursor_pos.1 + 1, new_line);
+            self.cursor_pos.1 += 1;
+            self.cursor_pos.0 = segment.len();
+        }
+
+        self.update_command_mode();
+    }
+
+    fn cancel_history_browse(&mut self) {
+        if self.history_idx.take().is_some() {
+            let draft = self.draft.clone();
+            self.set_content(&draft);
+        }
+    }
+
+    fn update_command_mode(&mut self) {
+        self.command_mode = self
+            .lines
+            .first()
+            .is_some_and(|line| line.starts_with('/'));
     }
 
     pub fn new_line(&mut self) {
@@ -236,5 +279,45 @@ impl ContentManager {
         self.lines[0]
             .find(' ')
             .unwrap_or(self.lines[0].len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ContentManager;
+
+    #[test]
+    fn insert_text_single_line_at_cursor() {
+        let mut cm = ContentManager::new();
+        cm.push('h');
+        cm.push('i');
+        cm.insert_text(" there");
+        assert_eq!(cm.lines(), &["hi there"]);
+        assert_eq!(cm.cursor_pos(), (8, 0));
+    }
+
+    #[test]
+    fn insert_text_multiline() {
+        let mut cm = ContentManager::new();
+        cm.insert_text("line1\nline2\nline3");
+        assert_eq!(cm.lines(), &["line1", "line2", "line3"]);
+        assert_eq!(cm.cursor_pos(), (5, 2));
+    }
+
+    #[test]
+    fn insert_text_enters_command_mode() {
+        let mut cm = ContentManager::new();
+        cm.insert_text("/model groq");
+        assert!(cm.is_command_mode());
+    }
+
+    #[test]
+    fn insert_text_cancels_history_browse() {
+        let mut cm = ContentManager::new();
+        cm.insert_text("old");
+        let _ = cm.submit();
+        cm.key_up(); // browse history ("old"); draft was empty
+        cm.insert_text("new");
+        assert_eq!(cm.lines(), &["new"]);
     }
 }

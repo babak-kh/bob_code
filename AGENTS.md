@@ -206,10 +206,13 @@ tool subsets. Do not design new features assuming hardcoded values.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+P` | Submit prompt |
-| `Enter` | New line in prompt |
+| `Enter` | Submit prompt |
+| `Shift+Enter` | New line in prompt |
+| `Ctrl+P` | Submit prompt (alternate) |
+| `Ctrl+Shift+V` | Paste from system clipboard |
+| `Shift+Insert` / terminal paste | Paste via bracketed paste |
 | `Tab` | Toggle focus between Prompt / Response panels |
-| `Ctrl+C` | Quit |
+| `Ctrl+D` | Quit |
 | `j` / `k` / arrows | Scroll response (when focused) |
 | `Ctrl+D` / `Ctrl+U` | Half-page down / up |
 | `Ctrl+F` / `Ctrl+B` | Full-page down / up |

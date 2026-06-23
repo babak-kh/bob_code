@@ -165,6 +165,14 @@ impl LLMModel for GroqBase {
                         }
                     }
                     Err(e) => {
+                        resp_tx
+                            .send(ChatMessageResponse {
+                                role: "assistant".to_string(),
+                                done: false,
+                                error: Some(format!("Failed to parse line as JSON: {}. Error: {}", line, e)),
+                                ..Default::default()
+                            })
+                            .unwrap();
                         tracing::error!("Failed to parse line as JSON: {}. Error: {}", line, e);
                     }
                 }
@@ -191,14 +199,14 @@ impl LLMModel for GroqBase {
     }
 }
 
-impl Into<UserChatMessageRequest> for &Thread {
-    fn into(self) -> UserChatMessageRequest {
+impl From<&Thread> for UserChatMessageRequest {
+    fn from(val: &Thread) -> Self {
         let result = UserChatMessageRequest {
             model: "gemma4:e4b".to_string(),
-            messages: self
+            messages: val
                 .get_context()
                 .iter()
-                .map(|m| {
+                .flat_map(|m| {
                     let mut data = vec![];
                     if let Some(content) = &m.content {
                         data.push(ChatMessageRequest {
@@ -207,7 +215,7 @@ impl Into<UserChatMessageRequest> for &Thread {
                             ..Default::default()
                         })
                     };
-                    if !m.response.is_none() {
+                    if m.response.is_some() {
                         data.push(ChatMessageRequest {
                             role: "assistant".to_string(),
                             content: m.response.clone(),
@@ -227,7 +235,7 @@ impl Into<UserChatMessageRequest> for &Thread {
                             role: "assistant".to_string(),
                             tool_calls: Some(
                                 tools
-                                    .into_iter()
+                                    .iter()
                                     .map(|t| ToolCallRequestMessage {
                                         id: t.id.clone(),
                                         tool_type: t.tool_type.clone(),
@@ -245,7 +253,6 @@ impl Into<UserChatMessageRequest> for &Thread {
                     }
                     data
                 })
-                .flatten()
                 .collect(),
             response_format: None,
             tools: Some(vec![

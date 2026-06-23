@@ -64,14 +64,13 @@ impl TextBlock {
     fn new(
         kind: MessageKind,
         label: &'static str,
-        header_fg: Color,
         dim_body: bool,
         content: String,
     ) -> Self {
         Self {
             kind,
             label,
-            header_style: Style::default().fg(header_fg).add_modifier(Modifier::BOLD),
+            header_style: Style::default().fg(Color::DarkGray),
             dim_body,
             content,
             selected: false,
@@ -174,8 +173,7 @@ pub fn user_block(content: String) -> Box<dyn ResponseBlock> {
     Box::new(TextBlock::new(
         MessageKind::User,
         "user:",
-        Color::Blue,
-        false, // normal body
+        false,
         content,
     ))
 }
@@ -184,8 +182,7 @@ pub fn assistant_block(content: String) -> Box<dyn ResponseBlock> {
     Box::new(TextBlock::new(
         MessageKind::AssistantContent,
         "assistant:",
-        Color::Green,
-        false, // normal body
+        false,
         content,
     ))
 }
@@ -210,8 +207,18 @@ pub fn command_block(content: String) -> Box<dyn ResponseBlock> {
     Box::new(TextBlock::new(
         MessageKind::InfoCommandOutput,
         "info:",
-        Color::Magenta,
-        true, // dimmed body
+        true,
         content,
     ))
+}
+
+pub fn error_block(content: String) -> Box<dyn ResponseBlock> {
+    Box::new(TextBlock {
+        kind: MessageKind::Error,
+        label: "error:",
+        header_style: Style::default().fg(Color::Red),
+        dim_body: false,
+        content,
+        selected: false,
+    })
 }

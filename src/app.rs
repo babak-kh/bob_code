@@ -1,6 +1,6 @@
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures::StreamExt;
-use ratatui::{layout::Flex, prelude::*};
+use ratatui::prelude::*;
 use std::env;
 use std::sync::Arc;
 use thiserror::Error;
@@ -52,15 +52,14 @@ impl App {
         });
 
         let mut user_profile = profile::UserProfile::new(config_base_path.clone());
-        user_profile
-            .initialize()
-            .expect("Failed to initialize user profile");
 
         user_profile
             .fetch(profile::ProfileDefaults {
                 model: "gpt-oss-120b".to_string(),
             })
             .expect("Failed to fetch user profile data");
+
+        tracing::debug!("User profile: {:?}", user_profile);
 
         Self {
             name: env!("CARGO_PKG_NAME").to_string(),
@@ -103,55 +102,54 @@ impl App {
                 Some(event) = event_stream.next() => {
                     tracing::info!("Event: {:?}", event);
                     match event {
-                        Ok(Event::Key(key_event)) => {
-                            // Global quit: Ctrl+C
-                            if is_quit(&Event::Key(key_event)) {
+                        Ok(event) => {
+                            if is_quit(&event) {
                                 self.user_profile.save().expect("Failed to flush user profile data");
                                 break;
                             }
 
-                            // If a dialog is open, route all keys to it first.
-                            if let Some((dialog, action)) = &mut self.dialog {
-                                match dialog.handle_key(key_event) {
-                                    Some(PromptDialogEvent::Submitted(resp)) => {
-                                        // SAFETY: shadow-borrow action before dialog is consumed
-                                        let action = std::mem::replace(
-                                            action,
-                                            DialogAction::SelectModel,
-                                        );
-                                        self.dialog = None;
-                                        self.handle_dialog_submit(resp, action);
+                            // Dialog captures key events only.
+                            if let Event::Key(key_event) = &event {
+                                if let Some((dialog, action)) = &mut self.dialog {
+                                    match dialog.handle_key(*key_event) {
+                                        Some(PromptDialogEvent::Submitted(resp)) => {
+                                            let action = std::mem::replace(
+                                                action,
+                                                DialogAction::SelectModel,
+                                            );
+                                            self.dialog = None;
+                                            self.handle_dialog_submit(resp, action);
+                                        }
+                                        Some(PromptDialogEvent::Cancelled) => {
+                                            self.dialog = None;
+                                        }
+                                        None => {}
                                     }
-                                    Some(PromptDialogEvent::Cancelled) => {
-                                        self.dialog = None;
-                                    }
-                                    None => {}
+                                    self.redraw(terminal);
+                                    continue;
                                 }
-                                self.redraw(terminal);
-                                continue;
-                            }
 
-                            // Tab: toggle focus between Prompt and Response
-                            if key_event.code == KeyCode::Tab {
-                                self.handle_focus_change();
-                                terminal.draw(|f| self.ui(f)).unwrap();
-                                continue;
+                                if key_event.code == KeyCode::Tab {
+                                    self.handle_focus_change();
+                                    terminal.draw(|f| self.ui(f)).unwrap();
+                                    continue;
+                                }
                             }
 
                             match self.focused {
                                 FocusedPanel::Response => {
-                                    self.response_area_controller.handle_key_event(key_event);
+                                    if let Event::Key(key_event) = event {
+                                        self.response_area_controller.handle_key_event(key_event);
+                                    }
                                 }
                                 FocusedPanel::Prompt => {
-                                    let prompt_event = self.prompt.handle_event(&event.unwrap());
-                                    if let Some(prompt_event) = prompt_event {
+                                    if let Some(prompt_event) = self.prompt.handle_event(&event) {
                                         self.handle_prompt_event(prompt_event, resp_tx.clone()).await;
                                     }
                                 }
                             }
                             self.redraw(terminal);
                         }
-                        Ok(_) => {}
                         Err(e) => {
                             tracing::error!("Error reading event: {}", e);
                         }
@@ -159,6 +157,12 @@ impl App {
                 }
                 Ok(resp) = resp_rx.recv() => {
                     tracing::info!("Received response: {:?}", resp);
+                    if let Some(e) = resp.error {
+                        self.response_area_controller
+                            .add_block(response_block::error_block(e));
+                        self.redraw(terminal);
+                        continue;
+                    }
                     if let Some(tool_calls) = resp.tool_calls {
                         self.controller.set_tool_calls(tool_calls.clone());
                         let tool_json = serde_json::to_string_pretty(&tool_calls)
@@ -173,7 +177,7 @@ impl App {
                             self.response_area_controller
                                 .add_block(response_block::tool_block(resp_json));
                         }
-                        let (model, thread) = self.controller.prepare_call("openai/gpt-oss-120b".to_string());
+                        let (model, thread) = self.controller.prepare_call(self.controller.current_model_name().unwrap().to_string());
                         let model_clone = model.unwrap().clone();
                         let resp_tx_clone = resp_tx.clone();
                         tokio::spawn(async move {
@@ -203,14 +207,14 @@ impl App {
     }
 
     fn ui(&mut self, f: &mut ratatui::Frame) {
+        let prompt_h = self.prompt.desired_height();
         let chunks = Layout::default()
-            .flex(Flex::Center)
             .margin(0)
             .direction(Direction::Vertical)
             .constraints(vec![
-                Constraint::Percentage(80), // chat / response
-                Constraint::Fill(1),        // prompt (remaining height)
-                Constraint::Length(1),      // status line (borderless, 1 row)
+                Constraint::Fill(1),          // response — takes remaining space
+                Constraint::Length(prompt_h), // prompt — content-sized, max 5 lines
+                Constraint::Length(1),        // status line
             ])
             .split(f.area());
 
@@ -287,7 +291,7 @@ impl App {
                 self.controller.set_prompt(text);
                 let (model, thread) = self
                     .controller
-                    .prepare_call("openai/gpt-oss-120b".to_string());
+                    .prepare_call(self.controller.current_model_name().unwrap().to_string());
                 let model_clone = model.unwrap().clone();
                 let resp_tx_clone = resp_tx.clone();
                 tokio::spawn(async move {
@@ -320,7 +324,7 @@ fn register_models(controller: &mut controller::MessageController) -> Result<(),
 
 fn is_quit(event: &Event) -> bool {
     if let Event::Key(key_event) = event {
-        return key_event.code == KeyCode::Char('c')
+        return key_event.code == KeyCode::Char('d')
             && key_event
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::CONTROL);

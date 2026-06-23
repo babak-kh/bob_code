@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use crate::models::tool::ToolCallRequest;
 
 use super::thread::Thread;
@@ -15,27 +17,25 @@ pub trait LLMModel {
     async fn generate(&self, prompt: &Thread, resp_tx: broadcast::Sender<ChatMessageResponse>);
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub enum Role {
     System,
+    #[default]
     User,
     Assistant,
     Tool,
 }
-impl Default for Role {
-    fn default() -> Self {
-        Role::User
-    }
-}
 
-impl Role {
-    pub fn to_string(&self) -> String {
+impl Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s: &str = "user";
         match self {
-            Role::System => "system".to_string(),
-            Role::User => "user".to_string(),
-            Role::Assistant => "assistant".to_string(),
-            Role::Tool => "tool".to_string(),
+            Role::User => (),
+            Role::System => s = "system",
+            Role::Assistant => s = "assistant",
+            Role::Tool => s = "tool",
         }
+        write!(f, "{}", s)
     }
 }
 

@@ -1,3 +1,4 @@
+pub mod clipboard;
 pub mod commands;
-pub mod system_call;
 pub mod profile;
+pub mod system_call;

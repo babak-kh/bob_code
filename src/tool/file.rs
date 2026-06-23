@@ -6,7 +6,6 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::models::tool::{Tool, ToolFunction};
 
 pub fn read_tool() -> Tool {
-    // For demonstration, we return a hardcoded tool. In a real application, this could be dynamic.
     Tool {
         tool_type: "function".to_string(),
         function: ToolFunction {

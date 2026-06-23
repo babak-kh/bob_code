@@ -1,3 +1,0 @@
-2026-06-09T14:22:32.698632Z  INFO src/app.rs:104: Event: Ok(Key(KeyEvent { code: Char('q'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }))
-2026-06-09T14:22:33.514624Z  INFO src/app.rs:104: Event: Ok(Key(KeyEvent { code: Backspace, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }))
-2026-06-09T14:22:33.800593Z  INFO src/app.rs:104: Event: Ok(Key(KeyEvent { code: Char('c'), modifiers: KeyModifiers(CONTROL), kind: Press, state: KeyEventState(0x0) }))

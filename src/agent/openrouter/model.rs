@@ -8,7 +8,8 @@ pub(super) struct ModelResponse {
     pub object: String,
     pub created: u64,
     pub model: String,
-    pub system_fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_fingerprint: Option<String>,
     pub choices: Vec<Choice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ResponseUsage>,
@@ -28,11 +29,13 @@ pub(super) struct Choice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) enum FinishReason {
+    #[serde(rename = "stop", alias = "Stop")]
     Stop,
+    #[serde(rename = "length", alias = "Length")]
     Length,
-    #[serde(rename = "tool_calls")]
+    #[serde(rename = "tool_calls", alias = "ToolCalls")]
     ToolCalls,
-    #[serde(rename = "function_call")]
+    #[serde(rename = "function_call", alias = "FunctionCall")]
     FunctionCall,
 }
 

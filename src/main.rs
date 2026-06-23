@@ -18,7 +18,7 @@ use tracing_error::ErrorLayer;
 use tracing_subscriber::{self, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -31,7 +31,12 @@ async fn main() -> Result<(), io::Error> {
     initialize_logging().unwrap();
     let mut stdout = io::stdout();
     enable_raw_mode()?;
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let app = app::App::new();
@@ -40,7 +45,8 @@ async fn main() -> Result<(), io::Error> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
     Ok(())

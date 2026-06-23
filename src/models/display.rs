@@ -14,4 +14,6 @@ pub enum MessageKind {
     AssistantToolCall,
     /// Output from a slash-command (e.g. `/tree`).
     InfoCommandOutput,
+    /// Error returned by the model backend (e.g. parse failure, API error).
+    Error,
 }

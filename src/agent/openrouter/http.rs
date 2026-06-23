@@ -7,7 +7,10 @@ use crate::{
         model::{ChatMessageResponse, LLMModel},
         thread::Thread,
     },
-    tool::{create_file_tool, edit_file_tool, fd_tool, list_files_tool, read_tool, rg_tool},
+    tool::{
+        ToolCallRequest, create_file_tool, edit_file_tool, fd_tool, list_files_tool, read_tool,
+        rg_tool,
+    },
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -116,56 +119,46 @@ impl LLMModel for OpenRouterBase {
                             continue;
                         }
 
-                        if let Some(tool_calls) = message.tool_calls {
-                            resp_tx
-                                .send(ChatMessageResponse {
-                                    role: "assistant".to_string(),
-                                    tool_calls: Some(
-                                        tool_calls
-                                            .into_iter()
-                                            .map(|tc| tc.clone().into())
-                                            .collect(),
-                                    ),
-                                    done: false,
-                                    ..Default::default()
-                                })
-                                .unwrap();
+                        let role = String::from("assistant");
+                        let mut content: Option<String> = None;
+                        let mut thinking: Option<String> = None;
+                        let mut tools: Option<Vec<ToolCallRequest>> = None;
+
+                        if let Some(tool_calls) = message.tool_calls.filter(|tc| !tc.is_empty()) {
+                            tools = Some(tool_calls.into_iter().map(|tc| tc.into()).collect())
+                        }
+                        if let Some(c) = message.content.filter(|c| !c.is_empty()) {
+                            content = Some(c);
+                        } else if let Some(t) = message.thinking.filter(|t| !t.is_empty()) {
+                            thinking = Some(t);
+                        } else if let Some(t) = message.reasoning.filter(|t| !t.is_empty()) {
+                            thinking = Some(t);
                         }
 
-                        if let Some(content) = message.content {
-                            let to_push = content.clone();
-                            resp_tx
-                                .send(ChatMessageResponse {
-                                    role: "assistant".to_string(),
-                                    content: Some(content.clone()),
-                                    done: false,
-                                    ..Default::default()
-                                })
-                                .unwrap();
-                            complete_response.push_str(&to_push);
-                        } else if let Some(thinking) = message.thinking {
-                            resp_tx
-                                .send(ChatMessageResponse {
-                                    role: "assistant".to_string(),
-                                    thinking: Some(thinking.clone()),
-                                    done: false,
-                                    ..Default::default()
-                                })
-                                .unwrap();
-                        } else if let Some(thinking) = message.reasoning {
-                            resp_tx
-                                .send(ChatMessageResponse {
-                                    role: "assistant".to_string(),
-                                    thinking: Some(thinking.clone()),
-                                    done: false,
-                                    ..Default::default()
-                                })
-                                .unwrap();
-                            complete_response.push_str(&format!("Thinking: {}", thinking));
-                        }
+                        resp_tx
+                            .send(ChatMessageResponse {
+                                content,
+                                role,
+                                thinking,
+                                tool_calls: tools,
+                                done: false,
+                                ..Default::default()
+                            })
+                            .unwrap();
                     }
                     Err(e) => {
                         tracing::error!("Failed to parse line as JSON: {}. Error: {}", line, e);
+                        resp_tx
+                            .send(ChatMessageResponse {
+                                role: "assistant".to_string(),
+                                done: true,
+                                error: Some(format!(
+                                    "Failed to parse line as JSON: {}. Error: {}",
+                                    line, e
+                                )),
+                                ..Default::default()
+                            })
+                            .unwrap();
                     }
                 }
                 if !complete_response.is_empty() && done {

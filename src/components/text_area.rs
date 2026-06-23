@@ -13,15 +13,20 @@ pub fn cursor_like_span<'a>(c: char) -> Span<'a> {
     )
 }
 
-pub fn default_block(name: Option<&str>, is_focused: bool, borders: Borders) -> Block<'_> {
-    let b = Block::default()
+pub fn panel_block(is_focused: bool, borders: Borders) -> Block<'static> {
+    Block::default()
         .borders(borders)
         .border_style(if is_focused {
-            Style::default().fg(Color::Red)
+            Style::default().fg(Color::Cyan)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::DarkGray)
         })
-        .border_type(ratatui::widgets::BorderType::Rounded);
+        .border_type(BorderType::Plain)
+}
+
+/// Kept for callers that need a titled block (e.g. dialogs).
+pub fn default_block(name: Option<&str>, is_focused: bool, borders: Borders) -> Block<'_> {
+    let b = panel_block(is_focused, borders);
     if let Some(name) = name {
         b.title(Span::styled(name, Style::default().fg(Color::White)))
     } else {
@@ -39,6 +44,8 @@ pub struct TextArea<'a> {
     /// When `Some(n)`, the first `n` characters of line 0 are rendered as a
     /// command token (Cyan + Bold) instead of the default foreground.
     command_prefix_len: Option<usize>,
+    /// Cap visible content lines; scrolls to keep the cursor in view.
+    max_visible_lines: Option<usize>,
 }
 
 impl<'a> TextArea<'a> {
@@ -49,6 +56,7 @@ impl<'a> TextArea<'a> {
             is_focused,
             block: None,
             command_prefix_len: None,
+            max_visible_lines: None,
         }
     }
 
@@ -60,6 +68,28 @@ impl<'a> TextArea<'a> {
     pub fn with_command_prefix(mut self, len: usize) -> Self {
         self.command_prefix_len = Some(len);
         self
+    }
+
+    pub fn with_max_visible_lines(mut self, max: usize) -> Self {
+        self.max_visible_lines = Some(max);
+        self
+    }
+
+    /// Slice lines to the viewport and adjust cursor row when content exceeds
+    /// `max_visible_lines`.
+    fn viewport(&self) -> (Vec<String>, (usize, usize), usize) {
+        let max = self.max_visible_lines.unwrap_or(self.lines.len());
+        if self.lines.len() <= max {
+            return (self.lines.clone(), self.cursor_pos, 0);
+        }
+        let scroll_start = self
+            .cursor_pos
+            .1
+            .saturating_sub(max - 1)
+            .min(self.lines.len().saturating_sub(max));
+        let visible = self.lines[scroll_start..scroll_start + max].to_vec();
+        let cursor = (self.cursor_pos.0, self.cursor_pos.1 - scroll_start);
+        (visible, cursor, scroll_start)
     }
 
     fn style_cursor(
@@ -116,6 +146,13 @@ impl<'a> TextArea<'a> {
 
 impl<'a> Widget for TextArea<'a> {
     fn render(self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        let (display_lines, display_cursor, scroll_start) = self.viewport();
+        let command_prefix = if scroll_start == 0 {
+            self.command_prefix_len
+        } else {
+            None
+        };
+
         let inner_area = match self.block {
             Some(block) => {
                 let inner = block.inner(area);
@@ -126,25 +163,24 @@ impl<'a> Widget for TextArea<'a> {
         };
 
         let content = if self.is_focused {
-            Self::style_cursor(&self.lines, self.cursor_pos, self.command_prefix_len)
+            Self::style_cursor(&display_lines, display_cursor, command_prefix)
         } else {
             // Unfocused: still apply command prefix colouring if present.
-            if let Some(pfx) = self.command_prefix_len {
+            if let Some(pfx) = command_prefix {
                 let cmd_style = Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD);
-                let mut styled: Vec<Line<'static>> = self
-                    .lines
+                let mut styled: Vec<Line<'static>> = display_lines
                     .iter()
                     .map(|l| Line::raw(l.clone()))
                     .collect();
-                if !self.lines.is_empty() {
+                if !display_lines.is_empty() {
                     styled[0] =
-                        build_line_with_prefix(&self.lines[0], usize::MAX, pfx, cmd_style);
+                        build_line_with_prefix(&display_lines[0], usize::MAX, pfx, cmd_style);
                 }
                 styled
             } else {
-                self.lines
+                display_lines
                     .iter()
                     .map(|l| Line::raw(l.clone()))
                     .collect()

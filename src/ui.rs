@@ -1,6 +1,8 @@
 use crate::components::response_block::ResponseBlock;
-use crate::components::text_area::{TextArea, default_block};
+use crate::components::text_area::{TextArea, panel_block};
 use crate::prompt::{ContentManager, PromptEvent};
+use crate::service::clipboard;
+use copypasta::ClipboardContext;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
@@ -12,9 +14,15 @@ use ratatui::{Frame, layout::Rect};
 // PromptController
 // ---------------------------------------------------------------------------
 
+/// Maximum content lines shown in the prompt before internal scroll kicks in.
+const PROMPT_MAX_LINES: usize = 5;
+/// Top + bottom border rows.
+const PROMPT_BORDER_ROWS: u16 = 2;
+
 pub struct PromptController {
     content: ContentManager,
     is_focused: bool,
+    clipboard: Option<ClipboardContext>,
 }
 
 impl PromptController {
@@ -22,6 +30,7 @@ impl PromptController {
         Self {
             content: ContentManager::new(),
             is_focused: true,
+            clipboard: None,
         }
     }
 
@@ -33,35 +42,51 @@ impl PromptController {
         self.content.is_empty()
     }
 
+    /// Terminal rows needed to render the prompt (borders + up to 5 content lines).
+    pub fn desired_height(&self) -> u16 {
+        let content = self
+            .content
+            .lines()
+            .len()
+            .clamp(1, PROMPT_MAX_LINES) as u16;
+        content + PROMPT_BORDER_ROWS
+    }
+
     /// Handle a crossterm event. Returns `Some(PromptEvent)` when the user submits.
     pub fn handle_event(&mut self, event: &Event) -> Option<PromptEvent> {
-        let Event::Key(KeyEvent {
-            code, modifiers, ..
-        }) = event
-        else {
-            return None;
-        };
-
-        match (code, *modifiers) {
-            // Submit: Ctrl+P
-            (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
-                return self.content.submit();
+        match event {
+            Event::Paste(text) => {
+                self.content.insert_text(text);
+                None
             }
-            // New line: plain Enter
-            (KeyCode::Enter, _) => self.content.new_line(),
+            Event::Key(key) => self.handle_key(key),
+            _ => None,
+        }
+    }
+
+    fn handle_key(&mut self, key: &KeyEvent) -> Option<PromptEvent> {
+        match (key.code, key.modifiers) {
+            // Submit: Enter; Shift+Enter inserts a newline
+            (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) => self.content.new_line(),
+            (KeyCode::Enter, _) => return self.content.submit(),
+            (KeyCode::Char('p'), KeyModifiers::CONTROL) => return self.content.submit(),
+            // Paste from system clipboard
+            (KeyCode::Char('v'), m) if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) => {
+                if let Some(text) = clipboard::read(&mut self.clipboard) {
+                    self.content.insert_text(&text);
+                }
+            }
             // Backspace
             (KeyCode::Backspace, _) => self.content.pop(),
-            // Clear: Ctrl+C or Esc
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) | (KeyCode::Esc, _) => {
-                self.content.clear()
-            }
+            // Clear buffer
+            (KeyCode::Esc, _) => self.content.clear(),
             // Cursor / history navigation
             (KeyCode::Left, _) => self.content.cursor_pre(),
             (KeyCode::Right, _) => self.content.cursor_next(),
             (KeyCode::Up, _) => self.content.key_up(),
             (KeyCode::Down, _) => self.content.key_down(),
             // Regular character input
-            (KeyCode::Char(c), _) => self.content.push(*c),
+            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => self.content.push(c),
             _ => {}
         }
 
@@ -69,19 +94,18 @@ impl PromptController {
     }
 
     pub fn render(&self, f: &mut Frame, area: Rect) {
-        let block = default_block(Some("Prompt"), self.is_focused, Borders::ALL);
+        let block = panel_block(self.is_focused, Borders::TOP | Borders::BOTTOM);
         let token_len = self.content.command_token_len();
-        let text_area = TextArea::new(
+        let mut text_area = TextArea::new(
             self.content.lines(),
             self.content.cursor_pos(),
             self.is_focused,
         )
-        .with_block(block);
-        let text_area = if token_len > 0 {
-            text_area.with_command_prefix(token_len)
-        } else {
-            text_area
-        };
+        .with_block(block)
+        .with_max_visible_lines(PROMPT_MAX_LINES);
+        if token_len > 0 {
+            text_area = text_area.with_command_prefix(token_len);
+        }
         f.render_widget(text_area, area);
     }
 }
@@ -122,7 +146,7 @@ impl StatusLineController {
             spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
         }
 
-        spans.push(Span::styled(" ⬡ ", Style::default().fg(Color::Green)));
+        spans.push(Span::styled(" ⬡ ", Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(
             self.gpu_info.clone(),
             Style::default().fg(Color::DarkGray),
@@ -359,14 +383,7 @@ impl ResponseAreaController {
     // ── Render ───────────────────────────────────────────────────────────────
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        // Draw the outer border and get the usable inner rect.
-        let outer_block = default_block(
-            Some("Response"),
-            self.is_focused,
-            Borders::TOP | Borders::LEFT | Borders::RIGHT,
-        );
-        let inner = outer_block.inner(area);
-        f.render_widget(outer_block, area);
+        let inner = area;
 
         self.last_area_height = inner.height.max(1);
         self.last_inner_width = inner.width;
