@@ -1,16 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    models::{
-        model::{Choice, Role, Usage},
-        tool::{ToolCallRequest, ToolCallResponse},
-    },
-    tool::{create_file_tool, edit_file_tool, fd_tool, list_files_tool, read_tool, rg_tool},
+use crate::models::{
+    model::Role,
+    tool::{ToolCallRequest, ToolCallResponse},
 };
 
 ///////////////////
 // Context
 ///////////////////
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ContextItem {
     pub role: Role,
@@ -26,8 +24,8 @@ pub struct ContextItem {
 impl ContextItem {
     pub fn new(role: Role, content: Option<String>) -> Self {
         ContextItem {
-            role: role,
-            content: content,
+            role,
+            content,
             ..Default::default()
         }
     }
@@ -86,30 +84,4 @@ impl Thread {
     pub fn add_context(&mut self, item: ContextItem) {
         self.context.push(item);
     }
-}
-
-/*
-{"model":"Gemma4:e2b","created_at":"2026-04-29T12:50:47.882318949Z","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_4jviog4l","function":{"index":0,"name":"read","arguments":{"line_from":1,"line_to":1000,"path":"to_read.txt"}}}]},"done":false}
-*/
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct AgentChatMessageResponse {
-    pub id: String,
-    pub object: String,
-    pub model: String,
-    pub created: i64,
-    pub choices: Vec<Choice>,
-    pub usage: Usage,
-    pub system_fingerprint: String,
-    pub x_groq: Option<serde_json::Value>,
-    pub service_tier: Option<String>,
-
-    pub total_duration: Option<i64>,
-    pub load_duration: Option<usize>,
-    pub prompt_eval_count: Option<usize>,
-    pub prompt_eval_duration: Option<usize>,
-    pub eval_count: Option<usize>,
-    pub eval_duration: Option<usize>,
-
-    pub done: Option<bool>,
 }

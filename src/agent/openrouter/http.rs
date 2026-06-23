@@ -68,7 +68,7 @@ impl LLMModel for OpenRouterBase {
             .unwrap();
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
-        let mut complete_response = String::new();
+        let complete_response = String::new();
         let mut done = false;
 
         while let Some(chunk) = stream.next().await {
@@ -148,6 +148,12 @@ impl LLMModel for OpenRouterBase {
                     }
                     Err(e) => {
                         tracing::error!("Failed to parse line as JSON: {}. Error: {}", line, e);
+
+                        if line.contains("OPENROUTER") {
+                            tracing::warn!("OpenRouter line: {}", line);
+                            continue;
+                        }
+
                         resp_tx
                             .send(ChatMessageResponse {
                                 role: "assistant".to_string(),

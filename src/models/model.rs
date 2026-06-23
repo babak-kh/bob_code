@@ -39,25 +39,6 @@ impl Display for Role {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct Choice {
-    pub index: usize,
-    pub message: ChatMessageResponse,
-    pub logprobs: Option<serde_json::Value>,
-    pub finish_reason: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct Usage {
-    queue_time: f64,
-    prompt_tokens: usize,
-    prompt_time: f64,
-    completion_tokens: usize,
-    completion_time: f64,
-    total_tokens: usize,
-    total_time: f64,
-}
-
 ////////////////////
 // Model unified output formats
 ///////////////////

@@ -19,6 +19,10 @@ use crate::system_prompt::generate_system_prompt;
 use crate::ui::{PromptController, ResponseAreaController, StatusLineController};
 use crate::{controller::MessageController, prompt::PromptEvent};
 
+const ENV_BOB_CODE_CONFIG_PATH: &str = "BOB_CODE_CONFIG_PATH";
+const ENV_OPENROUTER_API_TOKEN: &str = "OPENROUTER_API_TOKEN";
+const ENV_GROK_API_TOKEN: &str = "GROK_API_TOKEN";
+
 #[derive(PartialEq)]
 enum FocusedPanel {
     Prompt,
@@ -42,7 +46,7 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        let config_base_path = std::env::var("BOB_CODE_CONFIG_PATH").unwrap_or_else(|_| {
+        let config_base_path = std::env::var(ENV_BOB_CODE_CONFIG_PATH).unwrap_or_else(|_| {
             dirs::config_dir()
                 .unwrap()
                 .join("bob_code")
@@ -314,11 +318,18 @@ pub enum AppError {
 fn register_models(controller: &mut controller::MessageController) -> Result<(), AppError> {
     let gemma4_model = ollama::gemma4::GEMMA4Model;
     controller.register_model(Arc::new(gemma4_model));
-    let grok_model = groq::GroqBase::new(groq::GroqModel::GptOss120B, "".to_string());
-    controller.register_model(Arc::new(grok_model));
-    let openrouter_model =
-        openrouter::OpenRouterBase::new(openrouter::OpenRouterModel::DeepSeekR1, "".to_string());
-    controller.register_model(Arc::new(openrouter_model));
+
+    if let Ok(grok_api_token) = std::env::var(ENV_GROK_API_TOKEN) {
+        let grok_model = groq::GroqBase::new(groq::GroqModel::GptOss120B, grok_api_token);
+        controller.register_model(Arc::new(grok_model));
+    }
+    if let Ok(openrouter_api_token) = std::env::var(ENV_OPENROUTER_API_TOKEN) {
+        let openrouter_model = openrouter::OpenRouterBase::new(
+            openrouter::OpenRouterModel::DeepSeekR1,
+            openrouter_api_token,
+        );
+        controller.register_model(Arc::new(openrouter_model));
+    }
     Ok(())
 }
 
