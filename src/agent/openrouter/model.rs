@@ -1,4 +1,9 @@
-use crate::models::tool::Tool;
+use std::collections::HashMap;
+
+use crate::models::tool::{Tool, ToolCallRequest};
+use crate::models::tool::{
+    ToolCallRequest as BaseToolCallRequest, ToolCallRequestFunction as BaseToolCallRequestFunction,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::{json::JsonString, serde_as};
 
@@ -8,6 +13,7 @@ pub(super) struct ModelResponse {
     pub object: String,
     pub created: u64,
     pub model: String,
+    pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
     pub choices: Vec<Choice>,
@@ -37,6 +43,10 @@ pub(super) enum FinishReason {
     ToolCalls,
     #[serde(rename = "function_call", alias = "FunctionCall")]
     FunctionCall,
+    #[serde(rename = "content_filter", alias = "ContentFilter")]
+    ContentFilter,
+    #[serde(rename = "error", alias = "Error")]
+    Error,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,16 +61,17 @@ pub(super) struct Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ToolCall {
+    pub index: Option<usize>,
     pub function: ToolCallFunction,
-    pub id: String,
+    pub id: Option<String>,
     #[serde(rename(serialize = "type", deserialize = "type"))]
-    pub tool_type: String,
+    pub tool_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ToolCallFunction {
-    pub name: String,
-    pub arguments: String,
+    pub name: Option<String>,
+    pub arguments: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -193,19 +204,23 @@ pub struct ServerToolUse {
     pub web_search_requests: Option<u32>,
 }
 
-impl Into<crate::models::tool::ToolCallRequest> for ToolCall {
-    fn into(self) -> crate::models::tool::ToolCallRequest {
-        let mut result = crate::models::tool::ToolCallRequest {
-            id: self.id,
+impl TryFrom<ToolCall> for ToolCallRequest {
+    type Error = String;
+    fn try_from(val: ToolCall) -> Result<Self, Self::Error> {
+        let name: String = val.function.name.ok_or("Missing function name")?;
+        let arguments: String = val.function.arguments.ok_or("Missing function arguments")?;
+
+        let mut result = BaseToolCallRequest {
+            id: val.id.unwrap_or_default(),
             tool_type: Some("function".to_string()),
-            function: crate::models::tool::ToolCallRequestFunction {
-                index: 0, // The index can be set based on your requirements
-                name: self.function.name,
-                arguments: serde_json::Value::Null, // Set to null or handle as needed
+            function: BaseToolCallRequestFunction {
+                index: 0,
+                name,
+                arguments: serde_json::Value::Null,
             },
             error: None,
         };
-        match serde_json::from_str::<serde_json::Value>(&self.function.arguments) {
+        match serde_json::from_str::<serde_json::Value>(&arguments) {
             Ok(args) => {
                 result.function.arguments = args;
             }
@@ -213,6 +228,6 @@ impl Into<crate::models::tool::ToolCallRequest> for ToolCall {
                 result.error = Some(format!("Failed to parse arguments as JSON: {}", e));
             }
         }
-        result
+        Ok(result)
     }
 }

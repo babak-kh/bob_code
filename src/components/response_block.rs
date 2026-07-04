@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 /// Trait and concrete block types for response area content.
 ///
 /// Each [`ResponseBlock`] controls its own rendering, collapse state, and
@@ -6,6 +8,9 @@
 /// concrete types.
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+
+/// Subtle red tint behind system-prompt blocks.
+const SYSTEM_BG: Color = Color::Rgb(100, 35, 35);
 
 use super::collapsible::{CollapsibleText, compute_height};
 use super::markdown::{parse_markdown, parse_markdown_dimmed};
@@ -61,12 +66,7 @@ struct TextBlock {
 }
 
 impl TextBlock {
-    fn new(
-        kind: MessageKind,
-        label: &'static str,
-        dim_body: bool,
-        content: String,
-    ) -> Self {
+    fn new(kind: MessageKind, label: &'static str, dim_body: bool, content: String) -> Self {
         Self {
             kind,
             label,
@@ -128,10 +128,13 @@ struct CollapsibleBlock {
 }
 
 impl CollapsibleBlock {
-    fn new(kind: MessageKind, title: String, content: String) -> Self {
+    fn new(kind: MessageKind, title: String, content: String, collapsed: bool) -> Self {
         Self {
             kind,
-            inner: CollapsibleText::new(title, content, true /* collapsed */, true /* dim */),
+            inner: CollapsibleText::new(
+                title, content, collapsed,
+                true, /* dim */
+            ),
         }
     }
 }
@@ -166,16 +169,75 @@ impl ResponseBlock for CollapsibleBlock {
 }
 
 // ---------------------------------------------------------------------------
+// System prompt block — collapsible with light-red background
+// ---------------------------------------------------------------------------
+
+struct SystemBlock {
+    inner: CollapsibleText,
+}
+
+impl SystemBlock {
+    fn new(content: String) -> Self {
+        Self {
+            inner: CollapsibleText::new(
+                "system prompt".to_string(),
+                content,
+                true, /* collapsed */
+                false,
+            ),
+        }
+    }
+}
+
+fn apply_bg(lines: &mut [Line<'static>], bg: Color) {
+    for line in lines.iter_mut() {
+        for span in &mut line.spans {
+            span.style = span.style.bg(bg);
+        }
+    }
+}
+
+impl ResponseBlock for SystemBlock {
+    fn block_kind(&self) -> MessageKind {
+        MessageKind::System
+    }
+    fn text(&self) -> &str {
+        &self.inner.content
+    }
+    fn append_text(&mut self, text: &str) {
+        self.inner.append(text);
+    }
+
+    fn build_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = self.inner.build_lines();
+        apply_bg(&mut lines, SYSTEM_BG);
+        lines
+    }
+    fn height(&self, inner_width: u16) -> u16 {
+        self.inner.height(inner_width)
+    }
+
+    fn set_selected(&mut self, selected: bool) {
+        self.inner.selected = selected;
+    }
+    fn toggle_collapse(&mut self) {
+        self.inner.toggle();
+    }
+    fn is_collapsible(&self) -> bool {
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public constructors — one per MessageKind
 // ---------------------------------------------------------------------------
 
+pub fn system_block(content: String) -> Box<dyn ResponseBlock> {
+    Box::new(SystemBlock::new(content))
+}
+
 pub fn user_block(content: String) -> Box<dyn ResponseBlock> {
-    Box::new(TextBlock::new(
-        MessageKind::User,
-        "user:",
-        false,
-        content,
-    ))
+    Box::new(TextBlock::new(MessageKind::User, "user:", false, content))
 }
 
 pub fn assistant_block(content: String) -> Box<dyn ResponseBlock> {
@@ -192,6 +254,7 @@ pub fn thinking_block(content: String) -> Box<dyn ResponseBlock> {
         MessageKind::AssistantThinking,
         "thinking".to_string(),
         content,
+        false, /* expanded */
     ))
 }
 
@@ -200,6 +263,7 @@ pub fn tool_block(content: String) -> Box<dyn ResponseBlock> {
         MessageKind::AssistantToolCall,
         "tool call / response".to_string(),
         content,
+        true, /* collapsed */
     ))
 }
 
@@ -212,13 +276,13 @@ pub fn command_block(content: String) -> Box<dyn ResponseBlock> {
     ))
 }
 
-pub fn error_block(content: String) -> Box<dyn ResponseBlock> {
+pub fn error_block(content: impl Display) -> Box<dyn ResponseBlock> {
     Box::new(TextBlock {
         kind: MessageKind::Error,
         label: "error:",
         header_style: Style::default().fg(Color::Red),
         dim_body: false,
-        content,
+        content: content.to_string(),
         selected: false,
     })
 }

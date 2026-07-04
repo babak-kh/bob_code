@@ -11,7 +11,7 @@ mod tool;
 mod ui;
 
 use color_eyre::eyre::Result;
-use lazy_static::lazy_static;
+use std::sync::LazyLock;
 use std::io;
 use std::path::PathBuf;
 use tracing_error::ErrorLayer;
@@ -52,15 +52,17 @@ async fn main() -> Result<(), io::Error> {
     Ok(())
 }
 
-lazy_static! {
-    pub static ref PROJECT_NAME: String = env!("CARGO_CRATE_NAME").to_uppercase().to_string();
-    pub static ref DATA_FOLDER: Option<PathBuf> =
-        std::env::var(format!("{}_DATA", PROJECT_NAME.clone()))
-            .ok()
-            .map(PathBuf::from);
-    pub static ref LOG_ENV: String = format!("{}_LOGLEVEL", PROJECT_NAME.clone());
-    pub static ref LOG_FILE: String = format!("{}.log", env!("CARGO_PKG_NAME"));
-}
+pub static PROJECT_NAME: LazyLock<String> =
+    LazyLock::new(|| env!("CARGO_CRATE_NAME").to_uppercase().to_string());
+pub static DATA_FOLDER: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
+    std::env::var(format!("{}_DATA", &*PROJECT_NAME))
+        .ok()
+        .map(PathBuf::from)
+});
+pub static LOG_ENV: LazyLock<String> =
+    LazyLock::new(|| format!("{}_LOGLEVEL", &*PROJECT_NAME));
+pub static LOG_FILE: LazyLock<String> =
+    LazyLock::new(|| format!("{}.log", env!("CARGO_PKG_NAME")));
 
 pub fn get_data_dir() -> PathBuf {
     PathBuf::from(".").join(".data")
@@ -70,7 +72,7 @@ pub fn initialize_logging() -> Result<()> {
     let directory = get_data_dir();
     println!("Directory: {:?}", directory);
     std::fs::create_dir_all(directory.clone())?;
-    let log_path = directory.join(LOG_FILE.clone());
+    let log_path = directory.join(&*LOG_FILE);
     println!("log_path: {:?}", log_path);
     let log_file = std::fs::File::create(log_path)?;
     println!("log_file: {:?}", log_file);

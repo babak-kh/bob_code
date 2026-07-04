@@ -2,6 +2,7 @@ use super::model::{
     ChatMessageRequest, ToolCallRequestFunction, ToolCallRequestMessage, UserChatMessageRequest,
 };
 use super::model::{Message, ModelResponse};
+use crate::models::model::ModelResponseErr;
 use crate::{
     models::{
         model::{ChatMessageResponse, LLMModel},
@@ -169,7 +170,7 @@ impl LLMModel for GroqBase {
                             .send(ChatMessageResponse {
                                 role: "assistant".to_string(),
                                 done: false,
-                                error: Some(format!("Failed to parse line as JSON: {}. Error: {}", line, e)),
+                                error: Some(ModelResponseErr::ParseErr(e.to_string())),
                                 ..Default::default()
                             })
                             .unwrap();

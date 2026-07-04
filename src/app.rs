@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use crate::agent::{groq, ollama, openrouter};
 use crate::commands::{CommandEffect, DialogAction};
 use crate::components::prompt_dialog::{FieldResponse, PromptDialogController, PromptDialogEvent};
-use crate::components::response_block;
+use crate::components::response_block::*;
 use crate::controller;
 use crate::models::model::ChatMessageResponse;
 use crate::service::profile;
@@ -91,7 +91,10 @@ impl App {
             self.status_line.set_model_name(name);
         }
         let _thread_id = self.controller.new_thread();
-        self.controller.set_system(generate_system_prompt());
+        let system_prompt = generate_system_prompt();
+        self.controller.set_system(system_prompt.clone());
+        self.response_area_controller
+            .add_block(system_block(system_prompt));
         let (gpu_info_channel_tx, mut gpu_info_channel_rx) = mpsc::unbounded_channel::<String>();
 
         let (resp_tx, mut resp_rx) = broadcast::channel::<ChatMessageResponse>(1000);
@@ -163,7 +166,7 @@ impl App {
                     tracing::info!("Received response: {:?}", resp);
                     if let Some(e) = resp.error {
                         self.response_area_controller
-                            .add_block(response_block::error_block(e));
+                            .add_block(error_block(e));
                         self.redraw(terminal);
                         continue;
                     }
@@ -172,14 +175,14 @@ impl App {
                         let tool_json = serde_json::to_string_pretty(&tool_calls)
                             .unwrap_or_else(|_| "Failed to serialize tool call".to_string());
                         self.response_area_controller
-                            .add_block(response_block::tool_block(tool_json));
+                            .add_block(tool_block(tool_json));
                         let tool_response = MessageController::handle_tool_calls(tool_calls.as_ref()).await;
                         for resp in &tool_response {
                             self.controller.set_tool_call_response(resp.clone());
                             let resp_json = serde_json::to_string_pretty(resp)
                                 .unwrap_or_else(|_| "Failed to serialize tool response".to_string());
                             self.response_area_controller
-                                .add_block(response_block::tool_block(resp_json));
+                                .add_block(tool_block(resp_json));
                         }
                         let (model, thread) = self.controller.prepare_call(self.controller.current_model_name().unwrap().to_string());
                         let model_clone = model.unwrap().clone();
@@ -194,11 +197,11 @@ impl App {
                     }
                     if let Some(thinking) = resp.thinking && !thinking.is_empty() {
                             self.response_area_controller
-                                .add_block(response_block::thinking_block(thinking));
+                                .add_block(thinking_block(thinking));
                     }
                     if let Some(content) = resp.content && !content.is_empty() {
                             self.response_area_controller
-                                .add_block(response_block::assistant_block(content));
+                                .add_block(assistant_block(content));
                     }
                     self.redraw(terminal);
                 }
@@ -242,11 +245,16 @@ impl App {
             DialogAction::SelectModel => {
                 if let Some(FieldResponse::SingleChoice { value, .. }) = resp.get("model") {
                     let name = value.clone();
-                    self.controller.set_current_model(name.clone());
+                    self.controller
+                        .set_current_model(name.clone())
+                        .unwrap_or_else(|e| {
+                            self.response_area_controller
+                                .add_block(error_block(format!("Failed to switch model: {e}")));
+                        });
                     self.status_line.set_model_name(name.clone());
                     self.user_profile.set_model(name.clone());
                     self.response_area_controller
-                        .add_block(response_block::command_block(format!("Switched to {name}")));
+                        .add_block(command_block(format!("Switched to {name}")));
                 }
             }
         }
@@ -278,8 +286,7 @@ impl App {
                     match cmd_effect {
                         CommandEffect::None => {}
                         CommandEffect::ResponseArea(text) => {
-                            self.response_area_controller
-                                .add_block(response_block::command_block(text));
+                            self.response_area_controller.add_block(command_block(text));
                         }
                         CommandEffect::OpenDialog { schema, action } => {
                             self.dialog = Some((PromptDialogController::new(schema), action));
@@ -290,7 +297,7 @@ impl App {
             PromptEvent::Submitted(text) => {
                 // Show the user message immediately in the response area
                 self.response_area_controller
-                    .add_block(response_block::user_block(text.clone()));
+                    .add_block(user_block(text.clone()));
 
                 self.controller.set_prompt(text);
                 let (model, thread) = self
@@ -318,17 +325,34 @@ pub enum AppError {
 fn register_models(controller: &mut controller::MessageController) -> Result<(), AppError> {
     let gemma4_model = ollama::gemma4::GEMMA4Model;
     controller.register_model(Arc::new(gemma4_model));
+    tracing::info!("Registered Ollama Gemma4 model");
 
     if let Ok(grok_api_token) = std::env::var(ENV_GROK_API_TOKEN) {
         let grok_model = groq::GroqBase::new(groq::GroqModel::GptOss120B, grok_api_token);
         controller.register_model(Arc::new(grok_model));
+        tracing::info!("Registered Groq GptOss120B model");
     }
     if let Ok(openrouter_api_token) = std::env::var(ENV_OPENROUTER_API_TOKEN) {
         let openrouter_model = openrouter::OpenRouterBase::new(
             openrouter::OpenRouterModel::DeepSeekR1,
-            openrouter_api_token,
+            openrouter_api_token.clone(),
         );
         controller.register_model(Arc::new(openrouter_model));
+        tracing::info!("Registered OpenRouter DeepSeekR1 model");
+
+        let openrouter_model_v4_pro = openrouter::OpenRouterBase::new(
+            openrouter::OpenRouterModel::DeepSeekV4Pro,
+            openrouter_api_token.clone(),
+        );
+        controller.register_model(Arc::new(openrouter_model_v4_pro));
+        tracing::info!("Registered OpenRouter DeepSeekV4 model");
+
+        let openrouter_model_v4_flash = openrouter::OpenRouterBase::new(
+            openrouter::OpenRouterModel::DeepSeekV4Flash,
+            openrouter_api_token,
+        );
+        controller.register_model(Arc::new(openrouter_model_v4_flash));
+        tracing::info!("Registered OpenRouter DeepSeekV4 model");
     }
     Ok(())
 }

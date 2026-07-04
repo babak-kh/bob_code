@@ -48,6 +48,7 @@ impl MessageController {
     }
 
     pub fn set_current_model(&mut self, model_name: String) -> Result<(), String> {
+        tracing::info!("Setting current model to: {}", model_name);
         if self.models.contains_key(&model_name) {
             self.current_model = Some(model_name);
             Ok(())

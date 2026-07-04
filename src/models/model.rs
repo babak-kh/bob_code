@@ -7,6 +7,27 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum ModelResponseErr {
+    RequestErr(String),
+    ParseErr(String),
+    ToolCallErr(String),
+    NoChoiceErr,
+    NotEndedRequest,
+}
+
+impl Display for ModelResponseErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModelResponseErr::RequestErr(e) => write!(f, "Request to model err: {}", e),
+            ModelResponseErr::ParseErr(e) => write!(f, "Parse model response err: {}", e),
+            ModelResponseErr::ToolCallErr(e) => write!(f, "tool call err: {}", e),
+            ModelResponseErr::NoChoiceErr => write!(f, "model response has no choice"),
+            ModelResponseErr::NotEndedRequest => write!(f, "request did not end properly"),
+        }
+    }
+}
+
 /////////////////////////////
 // Model trait
 /////////////////////////////
@@ -50,5 +71,5 @@ pub struct ChatMessageResponse {
     pub thinking: Option<String>,
     pub done: bool,
     pub tool_calls: Option<Vec<ToolCallRequest>>,
-    pub error: Option<String>,
+    pub error: Option<ModelResponseErr>,
 }

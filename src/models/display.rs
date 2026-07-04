@@ -4,6 +4,8 @@
 /// streaming chunks should be merged into one block.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MessageKind {
+    /// System prompt sent to the model (shown collapsed, tinted background).
+    System,
     /// Text the user typed and submitted.
     User,
     /// Visible content returned by the assistant.

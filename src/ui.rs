@@ -9,7 +9,6 @@ use ratatui::text::Span;
 use ratatui::widgets::{Borders, Paragraph, Wrap};
 use ratatui::{Frame, layout::Rect};
 
-
 // ---------------------------------------------------------------------------
 // PromptController
 // ---------------------------------------------------------------------------
@@ -38,17 +37,9 @@ impl PromptController {
         self.is_focused = focused;
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.content.is_empty()
-    }
-
     /// Terminal rows needed to render the prompt (borders + up to 5 content lines).
     pub fn desired_height(&self) -> u16 {
-        let content = self
-            .content
-            .lines()
-            .len()
-            .clamp(1, PROMPT_MAX_LINES) as u16;
+        let content = self.content.lines().len().clamp(1, PROMPT_MAX_LINES) as u16;
         content + PROMPT_BORDER_ROWS
     }
 
@@ -71,7 +62,9 @@ impl PromptController {
             (KeyCode::Enter, _) => return self.content.submit(),
             (KeyCode::Char('p'), KeyModifiers::CONTROL) => return self.content.submit(),
             // Paste from system clipboard
-            (KeyCode::Char('v'), m) if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) => {
+            (KeyCode::Char('v'), m)
+                if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) =>
+            {
                 if let Some(text) = clipboard::read(&mut self.clipboard) {
                     self.content.insert_text(&text);
                 }
@@ -250,12 +243,12 @@ impl ResponseAreaController {
     pub fn add_block(&mut self, mut block: Box<dyn ResponseBlock>) {
         // Streaming merge: same kind as the last block → append in place.
         let kind = block.block_kind();
-        if let Some(last) = self.blocks.last_mut() {
-            if last.block_kind() == kind {
-                let text = block.text().to_string();
-                last.append_text(&text);
-                return;
-            }
+        if let Some(last) = self.blocks.last_mut()
+            && last.block_kind() == kind
+        {
+            let text = block.text().to_string();
+            last.append_text(&text);
+            return;
         }
 
         // New block.
@@ -293,14 +286,12 @@ impl ResponseAreaController {
                 true
             }
             (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
-                self.scroll_offset =
-                    self.scroll_offset.saturating_add(self.last_area_height);
+                self.scroll_offset = self.scroll_offset.saturating_add(self.last_area_height);
                 self.auto_scroll = false;
                 true
             }
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-                self.scroll_offset =
-                    self.scroll_offset.saturating_sub(self.last_area_height);
+                self.scroll_offset = self.scroll_offset.saturating_sub(self.last_area_height);
                 self.auto_scroll = false;
                 true
             }
@@ -339,9 +330,7 @@ impl ResponseAreaController {
             // (only if the block is collapsible).
             (KeyCode::Char(' '), _) | (KeyCode::Enter, _) => {
                 if let Some(block) = self.blocks.get_mut(self.selected_block) {
-                    if block.is_collapsible() {
-                        block.toggle_collapse();
-                    }
+                    block.toggle_collapse();
                 }
                 true
             }
@@ -434,8 +423,8 @@ impl ResponseAreaController {
             // Where on screen the visible portion of this block starts.
             let screen_y = inner.y + block_top.saturating_sub(viewport_top);
             // How many lines of this block to display.
-            let show_h = (block_h - skip_lines)
-                .min(inner.height.saturating_sub(screen_y - inner.y));
+            let show_h =
+                (block_h - skip_lines).min(inner.height.saturating_sub(screen_y - inner.y));
 
             if show_h == 0 {
                 virtual_y = block_bot;
