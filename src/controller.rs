@@ -116,9 +116,11 @@ impl MessageController {
         let mut responses = Vec::new();
         for call in tool_calls {
             tracing::info!("Handling tool call: {:?}", call);
+            let result = execute_tool(call).await;
             let response = ToolCallResponse {
                 id: call.id.clone(),
-                result: execute_tool(call).await,
+                result: result.text,
+                structured: result.structured,
             };
             responses.push(response);
         }

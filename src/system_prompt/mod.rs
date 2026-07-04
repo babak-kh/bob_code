@@ -24,12 +24,12 @@ pub fn generate_system_prompt() -> String {
         base.push_str(&tools);
     }
 
-    //if let Some(agents_info) = check_agents_file() {
-    //    base.push_str("\n\nAgents information:\n\n");
-    //    base.push_str(&agents_info);
-    //}
+    if let Some(agents_info) = check_agents_file() {
+        base.push_str("\n\nAgents information:\n\n");
+        base.push_str(&agents_info);
+    }
 
-    String::from(base)
+    base
 }
 
 fn check_agents_file() -> Option<String> {

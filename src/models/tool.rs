@@ -18,6 +18,10 @@ pub struct Tool {
 pub struct ToolCallResponse {
     pub id: String,
     pub result: String,
+    /// Optional structured output for rich TUI rendering.
+    /// Not serialized into thread history (display-only).
+    #[serde(skip)]
+    pub structured: Option<ToolStructuredOutput>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -45,4 +49,44 @@ pub struct ToolCallRequest {
 pub struct ToolCatalogEntry {
     pub name: String,
     pub description: String,
+}
+
+// ── Tool execution result ─────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ToolResult {
+    /// Plain-text representation (always present, used for the LLM context).
+    pub text: String,
+    /// Optional structured output for rich TUI rendering.
+    pub structured: Option<ToolStructuredOutput>,
+}
+
+/// Kinds of structured output a tool can produce for the response area.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum ToolStructuredOutput {
+    DiffView(DiffViewData),
+}
+
+/// Data needed to render a file diff.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DiffViewData {
+    pub file_path: String,
+    pub hunks: Vec<DiffHunk>,
+}
+
+/// A contiguous region of changed lines.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DiffHunk {
+    /// 1-based starting line in the old file.
+    pub old_start: usize,
+    /// 1-based starting line in the new file.
+    pub new_start: usize,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum DiffLine {
+    Context(String),
+    Added(String),
+    Removed(String),
 }

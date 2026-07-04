@@ -172,17 +172,30 @@ impl App {
                     }
                     if let Some(tool_calls) = resp.tool_calls {
                         self.controller.set_tool_calls(tool_calls.clone());
-                        let tool_json = serde_json::to_string_pretty(&tool_calls)
-                            .unwrap_or_else(|_| "Failed to serialize tool call".to_string());
-                        self.response_area_controller
-                            .add_block(tool_block(tool_json));
+
+                        // Tool call request block(s) — one per call, named by tool
+                        for call in &tool_calls {
+                            let tool_name = call.function.name.clone();
+                            let tool_json = serde_json::to_string_pretty(call)
+                                .unwrap_or_else(|_| "Failed to serialize tool call".to_string());
+                            self.response_area_controller
+                                .add_block(tool_block(tool_name, tool_json, None));
+                        }
+
                         let tool_response = MessageController::handle_tool_calls(tool_calls.as_ref()).await;
                         for resp in &tool_response {
                             self.controller.set_tool_call_response(resp.clone());
-                            let resp_json = serde_json::to_string_pretty(resp)
-                                .unwrap_or_else(|_| "Failed to serialize tool response".to_string());
+
+                            // Find the tool name from the matching call
+                            let tool_name = tool_calls
+                                .iter()
+                                .find(|c| c.id == resp.id)
+                                .map(|c| c.function.name.clone())
+                                .unwrap_or_else(|| "tool".to_string());
+
+                            let resp_json = resp.result.clone();
                             self.response_area_controller
-                                .add_block(tool_block(resp_json));
+                                .add_block(tool_block(tool_name, resp_json, resp.structured.clone()));
                         }
                         let (model, thread) = self.controller.prepare_call(self.controller.current_model_name().unwrap().to_string());
                         let model_clone = model.unwrap().clone();

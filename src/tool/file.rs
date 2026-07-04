@@ -3,7 +3,7 @@ use std::path::Path;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::models::tool::{Tool, ToolFunction};
+use crate::models::tool::{DiffViewData, Tool, ToolFunction};
 
 pub fn read_tool() -> Tool {
     Tool {
@@ -236,7 +236,7 @@ pub(super) async fn edit_file(
     path: &str,
     old_text: &str,
     new_text: &str,
-) -> Result<String, EditError> {
+) -> Result<(String, Option<crate::models::tool::DiffViewData>), EditError> {
     let content = tokio::fs::read_to_string(path).await?;
     let count = content.matches(old_text).count();
     match count {
@@ -244,9 +244,110 @@ pub(super) async fn edit_file(
         n if n > 1 => return Err(EditError::Ambiguous(n)),
         _ => {}
     }
+
     let new_content = content.replacen(old_text, new_text, 1);
-    tokio::fs::write(path, new_content).await?;
-    Ok(format!("Successfully edited '{path}'"))
+
+    // Compute diff between the old and new content *before* writing.
+    let diff = compute_diff(path, &content, &new_content);
+
+    tokio::fs::write(path, &new_content).await?;
+    Ok((format!("Successfully edited '{path}'"), diff))
+}
+
+/// Compute a simple line-based unified diff between `old` and `new`.
+fn compute_diff(path: &str, old: &str, new: &str) -> Option<DiffViewData> {
+    use crate::models::tool::{DiffHunk, DiffLine, DiffViewData};
+
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut old_i = 0usize;
+    let mut new_i = 0usize;
+
+    while old_i < old_lines.len() || new_i < new_lines.len() {
+        // Skip matching prefix.
+        let mut skip = 0;
+        while old_i + skip < old_lines.len()
+            && new_i + skip < new_lines.len()
+            && old_lines[old_i + skip] == new_lines[new_i + skip]
+        {
+            skip += 1;
+        }
+        if skip > 0 {
+            old_i += skip;
+            new_i += skip;
+        }
+
+        if old_i >= old_lines.len() && new_i >= new_lines.len() {
+            break;
+        }
+
+        // We found a mismatch region — look ahead to find matching suffix.
+        let mut del = 0;
+        let mut ins = 0;
+        // Simple O(N*M) scan to find the next common line.
+        'outer: for d in 0..=old_lines.len().saturating_sub(old_i) {
+            for i in 0..=new_lines.len().saturating_sub(new_i) {
+                if old_i + d < old_lines.len()
+                    && new_i + i < new_lines.len()
+                    && old_lines[old_i + d] == new_lines[new_i + i]
+                {
+                    del = d;
+                    ins = i;
+                    break 'outer;
+                }
+            }
+        }
+        if del == 0 && ins == 0 {
+            // Reached end with pure additions or deletions.
+            del = old_lines.len().saturating_sub(old_i);
+            ins = new_lines.len().saturating_sub(new_i);
+        }
+
+        let mut lines: Vec<DiffLine> = Vec::new();
+
+        // Context lines before the change (up to 3).
+        let ctx_start = old_i.saturating_sub(3.min(old_i));
+        let mut real_old_start = old_i + 1; // 1-based
+        if ctx_start < old_i {
+            for k in ctx_start..old_i {
+                lines.push(DiffLine::Context(old_lines[k].to_string()));
+            }
+            real_old_start = ctx_start + 1;
+        }
+
+        for k in 0..del {
+            lines.push(DiffLine::Removed(old_lines[old_i + k].to_string()));
+        }
+        for k in 0..ins {
+            lines.push(DiffLine::Added(new_lines[new_i + k].to_string()));
+        }
+
+        // Context lines after the change (up to 3).
+        let ctx_end = (old_i + del + 3).min(old_lines.len());
+        for k in (old_i + del)..ctx_end {
+            lines.push(DiffLine::Context(old_lines[k].to_string()));
+        }
+
+        hunks.push(DiffHunk {
+            old_start: real_old_start,
+            new_start: new_i.saturating_sub(old_i.saturating_sub(real_old_start)) + 1,
+            lines,
+        });
+
+        old_i += del;
+        new_i += ins;
+    }
+
+    if hunks.is_empty() {
+        None
+    } else {
+        Some(DiffViewData {
+            file_path: path.to_string(),
+            hunks,
+        })
+    }
 }
 
 pub(super) async fn list_files_and_directory(path: &str) -> Result<Vec<String>, io::Error> {
