@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::models::tool::ToolCallRequest;
+use crate::models::tool::{Tool, ToolCallRequest};
 
 use super::thread::Thread;
 use async_trait::async_trait;
@@ -35,7 +35,20 @@ impl Display for ModelResponseErr {
 pub trait LLMModel {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
-    async fn generate(&self, prompt: &Thread, resp_tx: broadcast::Sender<ChatMessageResponse>);
+    async fn generate(
+        &self,
+        prompt: &Thread,
+        resp_tx: broadcast::Sender<ChatMessageResponse>,
+        tools: Vec<Tool>,
+    );
+}
+
+/////////////////////////////
+// Sub agent trait
+/////////////////////////////
+#[async_trait]
+pub trait SubAgent {
+    fn model_name() -> String;
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -72,4 +85,15 @@ pub struct ChatMessageResponse {
     pub done: bool,
     pub tool_calls: Option<Vec<ToolCallRequest>>,
     pub error: Option<ModelResponseErr>,
+    pub usage: Option<UsageInfo>,
+}
+
+/// Provider-agnostic token consumption and cost summary.
+/// Backends that don't report usage leave this as `None`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct UsageInfo {
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub cost: Option<f64>,
 }

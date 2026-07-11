@@ -1,7 +1,11 @@
 pub enum PromptEvent {
     Submitted(String),
     /// A command with its name (first word after `/`) and space-separated arguments.
-    Command { name: String, args: Vec<String> },
+    Command {
+        name: String,
+        args: Vec<String>,
+    },
+    Cancel,
 }
 
 pub struct ContentManager {
@@ -107,10 +111,7 @@ impl ContentManager {
     }
 
     fn update_command_mode(&mut self) {
-        self.command_mode = self
-            .lines
-            .first()
-            .is_some_and(|line| line.starts_with('/'));
+        self.command_mode = self.lines.first().is_some_and(|line| line.starts_with('/'));
     }
 
     pub fn new_line(&mut self) {
@@ -144,9 +145,7 @@ impl ContentManager {
         self.draft = String::new();
 
         let event = if self.command_mode {
-            let mut parts = self.lines[0]
-                .trim_start_matches('/')
-                .split_whitespace();
+            let mut parts = self.lines[0].trim_start_matches('/').split_whitespace();
             let name = parts.next().unwrap_or("").to_string();
             let args: Vec<String> = parts.map(|s| s.to_string()).collect();
             PromptEvent::Command { name, args }
@@ -276,9 +275,7 @@ impl ContentManager {
         if !self.command_mode {
             return 0;
         }
-        self.lines[0]
-            .find(' ')
-            .unwrap_or(self.lines[0].len())
+        self.lines[0].find(' ').unwrap_or(self.lines[0].len())
     }
 }
 

@@ -1,11 +1,13 @@
-pub use crate::models::tool::{Tool, ToolCallRequest, ToolFunction, ToolResult, ToolStructuredOutput};
+pub use crate::models::tool::{ToolCallRequest, ToolResult, ToolStructuredOutput};
+pub use bash::{bash_tool, bash_tool_run};
 pub use file::{create_file_tool, edit_file_tool, list_files_tool, read_tool};
 pub use search::{fd_tool, rg_tool};
 
+pub mod bash;
 pub mod file;
 pub mod search;
 
-use crate::models::tool::ToolCatalogEntry;
+use crate::models::tool::{Tool, ToolCatalogEntry};
 use file::{create_file, edit_file, list_files_and_directory, read_lines_range};
 use search::{fd_search, rg_search};
 
@@ -19,7 +21,10 @@ pub async fn execute_tool(call: &ToolCallRequest) -> ToolResult {
                 .await
                 .map(|lines| lines.join("\n"))
                 .unwrap_or_else(|e| format!("Error executing read tool: {e}"));
-            ToolResult { text, structured: None }
+            ToolResult {
+                text,
+                structured: None,
+            }
         }
         "list_files_and_directories" => {
             let path = call.function.arguments["path"].as_str().unwrap_or("");
@@ -27,7 +32,10 @@ pub async fn execute_tool(call: &ToolCallRequest) -> ToolResult {
                 Ok(files) => files.join("\n"),
                 Err(e) => format!("Error executing list_files tool: {e}"),
             };
-            ToolResult { text, structured: None }
+            ToolResult {
+                text,
+                structured: None,
+            }
         }
         "create_file" => {
             let path = call.function.arguments["path"].as_str().unwrap_or("");
@@ -35,7 +43,10 @@ pub async fn execute_tool(call: &ToolCallRequest) -> ToolResult {
             let text = create_file(path, content)
                 .await
                 .unwrap_or_else(|e| format!("Error creating file: {e}"));
-            ToolResult { text, structured: None }
+            ToolResult {
+                text,
+                structured: None,
+            }
         }
         "edit_file" => {
             let path = call.function.arguments["path"].as_str().unwrap_or("");
@@ -57,7 +68,10 @@ pub async fn execute_tool(call: &ToolCallRequest) -> ToolResult {
             let text = fd_search(pattern, path, kind)
                 .await
                 .unwrap_or_else(|e| format!("Error running fd: {e}"));
-            ToolResult { text, structured: None }
+            ToolResult {
+                text,
+                structured: None,
+            }
         }
         "rg_search" => {
             let pattern = call.function.arguments["pattern"].as_str().unwrap_or("");
@@ -66,14 +80,38 @@ pub async fn execute_tool(call: &ToolCallRequest) -> ToolResult {
             let text = rg_search(pattern, path, context_lines)
                 .await
                 .unwrap_or_else(|e| format!("Error running rg: {e}"));
-            ToolResult { text, structured: None }
-        }
-        _ => {
             ToolResult {
-                text: format!("Unknown tool: {:?}", call.function.name),
+                text,
                 structured: None,
             }
         }
+        "bash" => {
+            let Some(cmd) = call.function.arguments["command"].as_str() else {
+                return ToolResult {
+                    text: "command argument is mandatory".to_string(),
+                    structured: None,
+                };
+            };
+
+            let args: Vec<String> = call.function.arguments["args"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|v| v.to_string())
+                .collect();
+
+            let result = bash_tool_run(cmd.to_string(), args)
+                .await
+                .unwrap_or_else(|e| format!("Error running bash: {e}"));
+            ToolResult {
+                text: result,
+                structured: None,
+            }
+        }
+        _ => ToolResult {
+            text: format!("Unknown tool: {:?}", call.function.name),
+            structured: None,
+        },
     }
 }
 
@@ -93,7 +131,8 @@ pub fn tools_catalog() -> Vec<ToolCatalogEntry> {
         },
         ToolCatalogEntry {
             name: "edit_file".to_string(),
-            description: "Replace an exact unique occurrence of old_text with new_text in a file.".to_string(),
+            description: "Replace an exact unique occurrence of old_text with new_text in a file."
+                .to_string(),
         },
         ToolCatalogEntry {
             name: "fd_search".to_string(),
@@ -103,5 +142,22 @@ pub fn tools_catalog() -> Vec<ToolCatalogEntry> {
             name: "rg_search".to_string(),
             description: "Search file contents using ripgrep.".to_string(),
         },
+        ToolCatalogEntry {
+            name: "bash".to_string(),
+            description: "Run bash command on OS. command and arguments are passed to bash -c"
+                .to_string(),
+        },
+    ]
+}
+
+pub fn default_tools() -> Vec<Tool> {
+    vec![
+        read_tool(),
+        list_files_tool(),
+        create_file_tool(),
+        edit_file_tool(),
+        fd_tool(),
+        rg_tool(),
+        bash_tool(),
     ]
 }

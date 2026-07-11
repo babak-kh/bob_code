@@ -1,9 +1,6 @@
-use crate::{
-    models::{
-        thread::Thread,
-        tool::{Tool, ToolCallRequest},
-    },
-    tool::{create_file_tool, edit_file_tool, fd_tool, list_files_tool, read_tool, rg_tool},
+use crate::models::{
+    thread::Thread,
+    tool::{Tool, ToolCallRequest},
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,14 +38,14 @@ pub(super) struct ResponseFormat {
     pub json_schema: Option<serde_json::Value>,
 }
 
-impl Into<UserChatMessageRequest> for &Thread {
-    fn into(self) -> UserChatMessageRequest {
+impl From<&Thread> for UserChatMessageRequest {
+    fn from(val: &Thread) -> Self {
         let result = UserChatMessageRequest {
             model: "gemma4:e4b".to_string(),
-            messages: self
+            messages: val
                 .get_context()
                 .iter()
-                .map(|m| {
+                .flat_map(|m| {
                     let mut data = vec![];
                     if let Some(content) = &m.content {
                         data.push(ChatMessageRequest {
@@ -57,7 +54,7 @@ impl Into<UserChatMessageRequest> for &Thread {
                             ..Default::default()
                         })
                     };
-                    if !m.response.is_none() {
+                    if m.response.is_some() {
                         data.push(ChatMessageRequest {
                             role: "assistant".to_string(),
                             content: m.response.clone(),
@@ -80,17 +77,9 @@ impl Into<UserChatMessageRequest> for &Thread {
                     }
                     data
                 })
-                .flatten()
                 .collect(),
             response_format: None,
-            tools: Some(vec![
-                read_tool(),
-                list_files_tool(),
-                create_file_tool(),
-                edit_file_tool(),
-                fd_tool(),
-                rg_tool(),
-            ]),
+            tools: None,
             stream: true,
             think: false,
             keep_alive: None,

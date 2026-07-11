@@ -9,9 +9,6 @@ use std::fmt::Display;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// Subtle red tint behind system-prompt blocks.
-const SYSTEM_BG: Color = Color::Rgb(100, 35, 35);
-
 use super::collapsible::{CollapsibleText, compute_height};
 use super::markdown::{parse_markdown, parse_markdown_dimmed};
 use crate::models::display::MessageKind;
@@ -20,6 +17,29 @@ use crate::models::tool::{DiffLine, DiffViewData, ToolStructuredOutput};
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
+
+/// Apply a background colour to every span in every line.
+fn apply_bg(lines: &mut [Line<'static>], bg: Color) {
+    if let Some(line) = lines.first_mut() {
+        for span in &mut line.spans {
+            span.style = span.style.bg(bg);
+        }
+    }
+}
+
+/// Background tint for each [`MessageKind`], used to visually delimit blocks
+/// in the response area (same approach as the system-prompt red background).
+fn bg_for_kind(kind: &MessageKind) -> Color {
+    match kind {
+        MessageKind::System => Color::Rgb(100, 35, 35),
+        MessageKind::User => Color::Rgb(30, 30, 85),
+        MessageKind::AssistantContent => Color::Rgb(35, 60, 35),
+        MessageKind::AssistantThinking => Color::Rgb(55, 55, 55),
+        MessageKind::AssistantToolCall => Color::Rgb(65, 55, 25),
+        MessageKind::InfoCommandOutput => Color::Rgb(35, 55, 55),
+        MessageKind::Error => Color::Rgb(90, 25, 25),
+    }
+}
 
 pub trait ResponseBlock: Send + Sync {
     /// Discriminant for streaming merge: consecutive blocks with the same
@@ -106,6 +126,8 @@ impl ResponseBlock for TextBlock {
         };
         lines.extend(body.lines);
         lines.push(Line::default());
+
+        apply_bg(&mut lines, bg_for_kind(&self.kind));
         lines
     }
 
@@ -152,7 +174,9 @@ impl ResponseBlock for CollapsibleBlock {
     }
 
     fn build_lines(&self) -> Vec<Line<'static>> {
-        self.inner.build_lines()
+        let mut lines = self.inner.build_lines();
+        apply_bg(&mut lines, bg_for_kind(&self.kind));
+        lines
     }
     fn height(&self, inner_width: u16) -> u16 {
         self.inner.height(inner_width)
@@ -272,7 +296,9 @@ impl ResponseBlock for ToolBlock {
 
     fn build_lines(&self) -> Vec<Line<'static>> {
         if self.inner.collapsed {
-            return self.inner.build_lines();
+            let mut lines = self.inner.build_lines();
+            apply_bg(&mut lines, bg_for_kind(&MessageKind::AssistantToolCall));
+            return lines;
         }
 
         let mut all: Vec<Line<'static>> = Vec::new();
@@ -286,17 +312,12 @@ impl ResponseBlock for ToolBlock {
         // Diff view
         all.extend(self.build_diff_lines());
 
-        // Raw text body (skip header, skip trailing blank)
-        let body_lines: Vec<&Line> = header_lines
-            .iter()
-            .skip(1) // skip header
-            .filter(|l| !l.spans.is_empty() || l != &&Line::default())
-            .collect();
-        // Just add all body lines including the trailing blank
+        // Add remaining body lines from header_lines (skip header) including the trailing blank
         for line in header_lines.iter().skip(1) {
             all.push(line.clone());
         }
 
+        apply_bg(&mut all, bg_for_kind(&MessageKind::AssistantToolCall));
         all
     }
     fn height(&self, inner_width: u16) -> u16 {
@@ -335,14 +356,6 @@ impl SystemBlock {
     }
 }
 
-fn apply_bg(lines: &mut [Line<'static>], bg: Color) {
-    for line in lines.iter_mut() {
-        for span in &mut line.spans {
-            span.style = span.style.bg(bg);
-        }
-    }
-}
-
 impl ResponseBlock for SystemBlock {
     fn block_kind(&self) -> MessageKind {
         MessageKind::System
@@ -356,7 +369,7 @@ impl ResponseBlock for SystemBlock {
 
     fn build_lines(&self) -> Vec<Line<'static>> {
         let mut lines = self.inner.build_lines();
-        apply_bg(&mut lines, SYSTEM_BG);
+        apply_bg(&mut lines, bg_for_kind(&MessageKind::System));
         lines
     }
     fn height(&self, inner_width: u16) -> u16 {
@@ -405,8 +418,8 @@ pub fn thinking_block(content: String) -> Box<dyn ResponseBlock> {
 }
 
 pub fn tool_block(tool_name: String, content: String, structured: Option<ToolStructuredOutput>) -> Box<dyn ResponseBlock> {
-    let diff = structured.and_then(|s| match s {
-        ToolStructuredOutput::DiffView(d) => Some(d),
+    let diff = structured.map(|s| match s {
+        ToolStructuredOutput::DiffView(d) => d,
     });
     Box::new(ToolBlock::new(tool_name, content, diff))
 }

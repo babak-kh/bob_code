@@ -138,19 +138,19 @@ pub(super) struct ToolCallFunction {
     pub arguments: String,
 }
 
-impl Into<crate::models::tool::ToolCallRequest> for ToolCall {
-    fn into(self) -> crate::models::tool::ToolCallRequest {
+impl From<ToolCall> for crate::models::tool::ToolCallRequest {
+    fn from(val: ToolCall) -> Self {
         let mut result = crate::models::tool::ToolCallRequest {
-            id: self.id,
+            id: val.id,
             tool_type: Some("function".to_string()),
             function: crate::models::tool::ToolCallRequestFunction {
                 index: 0, // The index can be set based on your requirements
-                name: self.function.name,
+                name: val.function.name,
                 arguments: serde_json::Value::Null, // Set to null or handle as needed
             },
             error: None,
         };
-        match serde_json::from_str::<serde_json::Value>(&self.function.arguments) {
+        match serde_json::from_str::<serde_json::Value>(&val.function.arguments) {
             Ok(args) => {
                 result.function.arguments = args;
             }

@@ -198,10 +198,10 @@ pub fn list_files_tool() -> Tool {
 }
 
 pub(super) async fn create_file(path: &str, content: &str) -> Result<String, io::Error> {
-    if let Some(parent) = Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
+    if let Some(parent) = Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::write(path, content).await?;
     Ok(format!("Successfully created '{path}'"))
@@ -236,7 +236,7 @@ pub(super) async fn edit_file(
     path: &str,
     old_text: &str,
     new_text: &str,
-) -> Result<(String, Option<crate::models::tool::DiffViewData>), EditError> {
+) -> Result<(String, Option<DiffViewData>), EditError> {
     let content = tokio::fs::read_to_string(path).await?;
     let count = content.matches(old_text).count();
     match count {
@@ -249,6 +249,7 @@ pub(super) async fn edit_file(
 
     // Compute diff between the old and new content *before* writing.
     let diff = compute_diff(path, &content, &new_content);
+    tracing::warn!("diff is {:?}", diff);
 
     tokio::fs::write(path, &new_content).await?;
     Ok((format!("Successfully edited '{path}'"), diff))
@@ -311,9 +312,9 @@ fn compute_diff(path: &str, old: &str, new: &str) -> Option<DiffViewData> {
         let ctx_start = old_i.saturating_sub(3.min(old_i));
         let mut real_old_start = old_i + 1; // 1-based
         if ctx_start < old_i {
-            for k in ctx_start..old_i {
+            (ctx_start..old_i).for_each(|k| {
                 lines.push(DiffLine::Context(old_lines[k].to_string()));
-            }
+            });
             real_old_start = ctx_start + 1;
         }
 
@@ -326,9 +327,9 @@ fn compute_diff(path: &str, old: &str, new: &str) -> Option<DiffViewData> {
 
         // Context lines after the change (up to 3).
         let ctx_end = (old_i + del + 3).min(old_lines.len());
-        for k in (old_i + del)..ctx_end {
+        ((old_i + del)..ctx_end).for_each(|k| {
             lines.push(DiffLine::Context(old_lines[k].to_string()));
-        }
+        });
 
         hunks.push(DiffHunk {
             old_start: real_old_start,

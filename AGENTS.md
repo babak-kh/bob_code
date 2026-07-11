@@ -109,19 +109,15 @@ pub trait LLMModel {
     fn version(&self) -> &str;
     async fn generate(
         &self,
-        thread: &Thread,
-        tools: &[Tool],                          // always passed; ignore if unsupported
+        prompt: &Thread,
         resp_tx: broadcast::Sender<ChatMessageResponse>,
+        tools: Vec<Tool>,                   // always passed; ignore if unsupported
     );
 }
 ```
 
-> ⚠️ **Known violation:** `generate` currently does not accept a `tools`
-> parameter. Tools are constructed ad-hoc inside each backend's `generate`
-> method. This must be corrected — tools are owned by the `tool/` module and
-> should be passed in by the controller, not built inside each backend.
-
-The backend decides whether to include `tools` in the outgoing request. If the
+The `tools` parameter is always provided by the caller via `tool::default_tools()`.
+Each backend decides whether to include tools in its outgoing request. If the
 model does not support native tool-calling, it silently ignores the parameter.
 The controller is never aware of per-model capabilities.
 
@@ -131,12 +127,15 @@ Single source of truth for all tools. Responsibilities:
 - Implement tool execution logic
 - Export `execute_tool(call: &ToolCallRequest) -> ToolResult` dispatcher
 - Export `tools_catalog() -> Vec<ToolCatalogEntry>` for system prompt injection
+- Export `default_tools() -> Vec<Tool>` for passing to `LLMModel::generate`
 
 `ToolResult` carries both a plain-text `text` field (for the LLM context) and an
 optional `structured` field for rich TUI rendering (e.g., diff views).
 
 Tools are **global** — they are not owned by or coupled to any specific model.
 The system prompt always receives the full catalog via `system_prompt/`.
+`generate` always receives the full tool list via `tool::default_tools()` from
+the caller (`app.rs`). No backend constructs tools internally.
 
 ### `controller.rs` — Conversation Orchestration
 `MessageController` owns:
@@ -144,7 +143,7 @@ The system prompt always receives the full catalog via `system_prompt/`.
 - The model registry (`HashMap<String, Arc<dyn LLMModel + Send + Sync>>`) and active model name
 - All mutations to conversation state (add user message, assistant response, tool calls)
 - Tool call execution via `handle_tool_calls`
-- `prepare_call()` — returns a clone of the active thread + a reference to the active model
+- `prepare_call()` — returns a clone of the active thread + a reference to the active model (tools are not returned here; they are sourced from `tool::default_tools()` in `app.rs`)
 
 The controller does **not** own display state. It does not know about scroll
 positions, rendered text, or UI layout.
@@ -182,12 +181,17 @@ Streaming tokens are appended via `ResponseAreaController::add_block` using the
 
 1. Non-done content/thinking chunks → `ResponseAreaController::add_block` (streaming merge)
 2. `tool_calls` chunk → `MessageController::set_tool_calls` → `handle_tool_calls` →
-   `set_tool_call_response` → new `generate` spawned to continue the conversation
+   `set_tool_call_response` → new `generate` spawned to continue the conversation,
+   again passing `default_tools()` so every call gets the full tool set
 3. `done: true` → `MessageController::set_response` records the final assistant turn
 
 Each `generate` call is spawned with `tokio::spawn` making it an independent
 async unit. This is the foundation for future sub-agent and background task
 support — each agent/sub-agent gets its own spawn + channel pair.
+
+> The tool list is always provided by `tool::default_tools()`. Backends that do
+> not support native tool-calling simply ignore the parameter. The controller
+> only routes tool call results and never constructs tool schemas itself.
 
 ---
 
@@ -262,8 +266,11 @@ assuming hardcoded values beyond what the profile already covers.
 
 1. Create `src/agent/<name>/mod.rs`
 2. Define a struct and implement `LLMModel` via `#[async_trait]`
-3. In `generate`: build the request from `thread` + `tools`, stream the response,
-   send `ChatMessageResponse` tokens to `resp_tx`
+3. In `generate`:
+   - Accept the `tools: Vec<Tool>` parameter (always provided by the caller)
+   - Build the provider-specific request from `thread` + `tools`
+   - Stream the response, sending `ChatMessageResponse` tokens to `resp_tx`
+   - If the backend does not support native tool-calling, simply ignore `tools`
 4. Read any API key from an environment variable
 5. Register the model in `app.rs` via `controller.register_model(Arc::new(...))`
 
@@ -278,6 +285,7 @@ Nothing else needs to change. Do not touch `thread.rs`, `tool/`, or `controller.
 2. Define the `Tool` schema (JSON schema parameters) as a public `fn <name>_tool() -> Tool`
 3. Add a match arm in `tool/mod.rs::execute_tool`
 4. Add an entry to `tools_catalog()` in `tool/mod.rs`
+5. Add the tool to `default_tools()` in `tool/mod.rs`
 
 The tool is now automatically available to all models (passed via `generate`)
 and described in the system prompt. No changes needed in `agent/` or `controller.rs`.

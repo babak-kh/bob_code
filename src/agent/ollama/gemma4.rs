@@ -1,5 +1,5 @@
-use super::model::{ChatMessageRequest, UserChatMessageRequest};
-use crate::models::model::ChatMessageResponse;
+use super::model::UserChatMessageRequest;
+use crate::models::{model::ChatMessageResponse, tool::Tool};
 use async_trait::async_trait;
 use futures::StreamExt;
 use tokio::sync::broadcast;
@@ -21,10 +21,22 @@ impl LLMModel for GEMMA4Model {
         todo!()
     }
 
-    async fn generate(&self, prompt: &Thread, resp_tx: broadcast::Sender<ChatMessageResponse>) {
+    async fn generate(
+        &self,
+        prompt: &Thread,
+        resp_tx: broadcast::Sender<ChatMessageResponse>,
+        tools: Vec<Tool>,
+    ) {
+        let msg = {
+            let mut msg: UserChatMessageRequest = prompt.into();
+            if !tools.is_empty() {
+                msg.tools = Some(tools);
+            };
+            msg
+        };
         let response = reqwest::Client::new()
             .post("http://localhost:11434/api/chat")
-            .json::<UserChatMessageRequest>(&prompt.into())
+            .json(&msg)
             .send()
             .await
             .unwrap();
@@ -110,8 +122,6 @@ impl LLMModel for GEMMA4Model {
 
 #[derive(serde::Deserialize, Debug)]
 struct ModelResponse {
-    model: String,
-    created_at: String,
     done: bool,
     message: ModelMessage,
 }

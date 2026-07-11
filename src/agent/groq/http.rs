@@ -3,12 +3,12 @@ use super::model::{
 };
 use super::model::{Message, ModelResponse};
 use crate::models::model::ModelResponseErr;
+use crate::models::tool::Tool;
 use crate::{
     models::{
         model::{ChatMessageResponse, LLMModel},
         thread::Thread,
     },
-    tool::{create_file_tool, edit_file_tool, fd_tool, list_files_tool, read_tool, rg_tool},
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -42,19 +42,22 @@ impl GroqBase {
             api_key,
         }
     }
-
-    pub fn process(&self, input: &str) -> String {
-        // Placeholder for actual processing logic
-        format!("Processed: {}", input)
-    }
 }
 
 #[async_trait]
 impl LLMModel for GroqBase {
-    async fn generate(&self, prompt: &Thread, resp_tx: broadcast::Sender<ChatMessageResponse>) {
+    async fn generate(
+        &self,
+        prompt: &Thread,
+        resp_tx: broadcast::Sender<ChatMessageResponse>,
+        tools: Vec<Tool>,
+    ) {
         let msg = {
             let mut msg: UserChatMessageRequest = prompt.into();
             msg.model = self.model_type.to_str().to_string();
+            if !tools.is_empty() {
+                msg.tools = Some(tools);
+            }
             msg
         };
         let response = reqwest::Client::new()
@@ -68,6 +71,7 @@ impl LLMModel for GroqBase {
         let mut buffer = String::new();
         let mut complete_response = String::new();
         let mut done = false;
+        let mut last_usage: Option<super::model::Usage> = None;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.unwrap();
@@ -105,6 +109,11 @@ impl LLMModel for GroqBase {
                         if let Some(reason) = &choice.finish_reason {
                             tracing::info!("Finish reason: {:?}", reason);
                             done = true;
+                        }
+
+                        // Capture usage from the final chunk.
+                        if event.usage.is_some() {
+                            last_usage = event.usage;
                         }
 
                         let message: Message;
@@ -177,16 +186,32 @@ impl LLMModel for GroqBase {
                         tracing::error!("Failed to parse line as JSON: {}. Error: {}", line, e);
                     }
                 }
-                if !complete_response.is_empty() && done {
-                    resp_tx
-                        .send(ChatMessageResponse {
-                            role: "assistant".to_string(),
-                            content: Some(complete_response.clone()),
-                            done: true,
-                            ..Default::default()
-                        })
-                        .unwrap();
-                }
+            }
+
+            // Emit the done chunk when the stream signals completion.
+            // Must be after the inner while so that [DONE] break is handled.
+            if done {
+                let usage: Option<crate::models::model::UsageInfo> =
+                    last_usage.map(|u| crate::models::model::UsageInfo {
+                        prompt_tokens: Some(u.prompt_tokens as u64),
+                        completion_tokens: Some(u.completion_tokens as u64),
+                        total_tokens: Some(u.total_tokens as u64),
+                        cost: None, // Groq doesn't report cost
+                    });
+                resp_tx
+                    .send(ChatMessageResponse {
+                        role: "assistant".to_string(),
+                        content: if complete_response.is_empty() {
+                            None
+                        } else {
+                            Some(complete_response.clone())
+                        },
+                        done: true,
+                        usage,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                return;
             }
         }
     }
@@ -256,14 +281,7 @@ impl From<&Thread> for UserChatMessageRequest {
                 })
                 .collect(),
             response_format: None,
-            tools: Some(vec![
-                read_tool(),
-                list_files_tool(),
-                create_file_tool(),
-                edit_file_tool(),
-                fd_tool(),
-                rg_tool(),
-            ]),
+            tools: None,
             stream: true,
             keep_alive: None,
             temperature: Some(1.0),

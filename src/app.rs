@@ -8,16 +8,23 @@ use tokio::select;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 
-use crate::agent::{groq, ollama, openrouter};
-use crate::commands::{CommandEffect, DialogAction};
-use crate::components::prompt_dialog::{FieldResponse, PromptDialogController, PromptDialogEvent};
-use crate::components::response_block::*;
-use crate::controller;
-use crate::models::model::ChatMessageResponse;
-use crate::service::profile;
-use crate::system_prompt::generate_system_prompt;
-use crate::ui::{PromptController, ResponseAreaController, StatusLineController};
-use crate::{controller::MessageController, prompt::PromptEvent};
+use crate::agent::openrouter::OpenRouterModel::MoonShotAiKIMI27;
+use crate::{
+    agent::{groq, ollama, openrouter},
+    commands::{CommandEffect, DialogAction},
+    components::{
+        notification::NotificationController,
+        prompt_dialog::{FieldResponse, PromptDialogController, PromptDialogEvent},
+        response_block::*,
+    },
+    controller::{self, MessageController},
+    models::model::ChatMessageResponse,
+    prompt::PromptEvent,
+    service::profile,
+    system_prompt::generate_system_prompt,
+    tool::*,
+    ui::{PromptController, ResponseAreaController, StatusLineController},
+};
 
 const ENV_BOB_CODE_CONFIG_PATH: &str = "BOB_CODE_CONFIG_PATH";
 const ENV_OPENROUTER_API_TOKEN: &str = "OPENROUTER_API_TOKEN";
@@ -38,9 +45,13 @@ pub struct App {
     response_area_controller: ResponseAreaController,
     status_line: StatusLineController,
     focused: FocusedPanel,
+    /// Stable id of the user-facing thread currently displayed.
+    pub(super) current_thread_id: usize,
     /// When `Some`, a floating dialog is active and captures all key events.
     /// The `DialogAction` records what to do when the user submits.
     dialog: Option<(PromptDialogController, DialogAction)>,
+    /// When `Some`, a floating notification overlay is shown (e.g. keybindings).
+    notification: Option<NotificationController>,
     user_profile: profile::UserProfile,
 }
 
@@ -76,8 +87,22 @@ impl App {
             response_area_controller: ResponseAreaController::new(),
             status_line: StatusLineController::new(),
             focused: FocusedPanel::Prompt,
+            current_thread_id: 0,
             dialog: None,
+            notification: None,
         }
+    }
+
+    /// Create a fresh user thread, inject the system prompt, and return
+    /// the stable id.
+    fn init_user_thread(&mut self) -> usize {
+        let thread_id = self.controller.new_thread();
+        let system_prompt = generate_system_prompt();
+        self.controller.set_system(thread_id, system_prompt.clone());
+        self.response_area_controller
+            .add_block(system_block(system_prompt));
+        self.current_thread_id = thread_id;
+        thread_id
     }
 
     pub async fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) {
@@ -90,11 +115,9 @@ impl App {
         if let Some(name) = self.controller.current_model_name().map(|s| s.to_string()) {
             self.status_line.set_model_name(name);
         }
-        let _thread_id = self.controller.new_thread();
-        let system_prompt = generate_system_prompt();
-        self.controller.set_system(system_prompt.clone());
-        self.response_area_controller
-            .add_block(system_block(system_prompt));
+
+        self.init_user_thread();
+
         let (gpu_info_channel_tx, mut gpu_info_channel_rx) = mpsc::unbounded_channel::<String>();
 
         let (resp_tx, mut resp_rx) = broadcast::channel::<ChatMessageResponse>(1000);
@@ -136,9 +159,32 @@ impl App {
                                     continue;
                                 }
 
+                                // Notification captures key events when active
+                                if let Some(notification) = &mut self.notification {
+                                    if notification.handle_key(*key_event).is_some() {
+                                        self.notification = None;
+                                    }
+                                    self.redraw(terminal);
+                                    continue;
+                                }
+
+                                // F1 toggles the keybindings notification
+                                if key_event.code == KeyCode::F(1) {
+                                    if self.notification.is_some() {
+                                        self.notification = None;
+                                    } else {
+                                        self.notification = Some(NotificationController::new(
+                                            "Keybindings",
+                                            crate::components::notification::keybinds_content(),
+                                        ));
+                                    }
+                                    self.redraw(terminal);
+                                    continue;
+                                }
+
                                 if key_event.code == KeyCode::Tab {
                                     self.handle_focus_change();
-                                    terminal.draw(|f| self.ui(f)).unwrap();
+                                    self.redraw(terminal);
                                     continue;
                                 }
                             }
@@ -163,67 +209,130 @@ impl App {
                     };
                 }
                 Ok(resp) = resp_rx.recv() => {
-                    tracing::info!("Received response: {:?}", resp);
-                    if let Some(e) = resp.error {
-                        self.response_area_controller
-                            .add_block(error_block(e));
-                        self.redraw(terminal);
-                        continue;
-                    }
-                    if let Some(tool_calls) = resp.tool_calls {
-                        self.controller.set_tool_calls(tool_calls.clone());
-
-                        // Tool call request block(s) — one per call, named by tool
-                        for call in &tool_calls {
-                            let tool_name = call.function.name.clone();
-                            let tool_json = serde_json::to_string_pretty(call)
-                                .unwrap_or_else(|_| "Failed to serialize tool call".to_string());
-                            self.response_area_controller
-                                .add_block(tool_block(tool_name, tool_json, None));
-                        }
-
-                        let tool_response = MessageController::handle_tool_calls(tool_calls.as_ref()).await;
-                        for resp in &tool_response {
-                            self.controller.set_tool_call_response(resp.clone());
-
-                            // Find the tool name from the matching call
-                            let tool_name = tool_calls
-                                .iter()
-                                .find(|c| c.id == resp.id)
-                                .map(|c| c.function.name.clone())
-                                .unwrap_or_else(|| "tool".to_string());
-
-                            let resp_json = resp.result.clone();
-                            self.response_area_controller
-                                .add_block(tool_block(tool_name, resp_json, resp.structured.clone()));
-                        }
-                        let (model, thread) = self.controller.prepare_call(self.controller.current_model_name().unwrap().to_string());
-                        let model_clone = model.unwrap().clone();
-                        let resp_tx_clone = resp_tx.clone();
-                        tokio::spawn(async move {
-                            model_clone.generate(&thread, resp_tx_clone).await;
-                        });
-                    }
-                    if resp.done {
-                        self.controller.set_response(resp.content.clone().unwrap_or_default());
-                        continue;
-                    }
-                    if let Some(thinking) = resp.thinking && !thinking.is_empty() {
-                            self.response_area_controller
-                                .add_block(thinking_block(thinking));
-                    }
-                    if let Some(content) = resp.content && !content.is_empty() {
-                            self.response_area_controller
-                                .add_block(assistant_block(content));
-                    }
+                    let tid = self.current_thread_id;
+                    self.handle_response_chunk(resp, tid, resp_tx.clone()).await;
                     self.redraw(terminal);
                 }
                 Some(gpu_info) = gpu_info_channel_rx.recv() => {
                     self.status_line.set_gpu_info(gpu_info);
-                            self.redraw(terminal);
+                    self.redraw(terminal);
                 }
             }
         }
+    }
+
+    /// Process a single streaming chunk from any model response.
+    async fn handle_response_chunk(
+        &mut self,
+        resp: ChatMessageResponse,
+        thread_id: usize,
+        resp_tx: broadcast::Sender<ChatMessageResponse>,
+    ) {
+        tracing::info!("Received response: {:?}", resp);
+
+        if let Some(e) = resp.error {
+            self.response_area_controller.add_block(error_block(e));
+            return;
+        }
+
+        // Tool calls arrive in a batch and trigger a new generate call.
+        if let Some(tool_calls) = resp.tool_calls {
+            self.controller
+                .set_tool_calls(thread_id, tool_calls.clone());
+
+            // Tool call request block(s) — one per call, named by tool
+            for call in &tool_calls {
+                let tool_name = call.function.name.clone();
+                let tool_json = serde_json::to_string_pretty(call)
+                    .unwrap_or_else(|_| "Failed to serialize tool call".to_string());
+                self.response_area_controller
+                    .add_block(tool_block(tool_name, tool_json, None));
+            }
+
+            let tool_response = MessageController::handle_tool_calls(tool_calls.as_ref()).await;
+            for resp in &tool_response {
+                self.controller
+                    .set_tool_call_response(thread_id, resp.clone());
+
+                // Find the tool name from the matching call
+                let tool_name = tool_calls
+                    .iter()
+                    .find(|c| c.id == resp.id)
+                    .map(|c| c.function.name.clone())
+                    .unwrap_or_else(|| "tool".to_string());
+
+                let resp_json = resp.result.clone();
+                self.response_area_controller.add_block(tool_block(
+                    tool_name,
+                    resp_json,
+                    resp.structured.clone(),
+                ));
+            }
+
+            self.spawn_generate(thread_id, resp_tx);
+            return;
+        }
+
+        if resp.done {
+            self.controller
+                .set_response(thread_id, resp.content.clone().unwrap_or_default());
+            if let Some(ref usage) = resp.usage {
+                self.status_line.set_usage_info(usage.clone());
+            }
+            return;
+        }
+
+        if let Some(thinking) = resp.thinking
+            && !thinking.is_empty()
+        {
+            self.response_area_controller
+                .add_block(thinking_block(thinking));
+        }
+        if let Some(content) = resp.content
+            && !content.is_empty()
+        {
+            self.response_area_controller
+                .add_block(assistant_block(content));
+        }
+    }
+
+    /// Spawn a new generate call for the given thread + current model.
+    fn spawn_generate(
+        &mut self,
+        thread_id: usize,
+        resp_tx: broadcast::Sender<ChatMessageResponse>,
+    ) {
+        let model_name = match self.controller.current_model_name() {
+            Some(name) => name.to_string(),
+            None => {
+                self.response_area_controller
+                    .add_block(error_block("No model selected".to_string()));
+                return;
+            }
+        };
+
+        let (model, thread) = self.controller.prepare_call(thread_id, &model_name);
+        let Some(model) = model else {
+            self.response_area_controller
+                .add_block(error_block(format!("Model '{model_name}' not found")));
+            return;
+        };
+        let Some(thread) = thread else {
+            self.response_area_controller
+                .add_block(error_block(format!("Thread {thread_id} not found")));
+            return;
+        };
+
+        let model_clone = model.clone();
+        let resp_tx_clone = resp_tx.clone();
+        self.controller.add_running(
+            thread_id,
+            tokio::spawn(async move {
+                model_clone
+                    .generate(&thread, resp_tx_clone, default_tools())
+                    .await;
+            }),
+        );
     }
 
     fn ui(&mut self, f: &mut ratatui::Frame) {
@@ -245,6 +354,11 @@ impl App {
         // Render the dialog as the topmost layer so it overlays everything.
         if let Some((dialog, _)) = &self.dialog {
             dialog.render(f);
+        }
+
+        // Render notification overlay (topmost, above dialog if both somehow active)
+        if let Some(notification) = &self.notification {
+            notification.render(f);
         }
     }
 
@@ -287,11 +401,14 @@ impl App {
             }
         }
     }
+
     async fn handle_prompt_event(
         &mut self,
         prompt_event: PromptEvent,
         resp_tx: broadcast::Sender<ChatMessageResponse>,
     ) {
+        let tid = self.current_thread_id;
+
         match prompt_event {
             PromptEvent::Command { name, args } => {
                 if let Some(cmd) = Self::parse_command(&name, &args) {
@@ -304,26 +421,27 @@ impl App {
                         CommandEffect::OpenDialog { schema, action } => {
                             self.dialog = Some((PromptDialogController::new(schema), action));
                         }
+                        CommandEffect::ClearThread => {
+                            self.response_area_controller.clear();
+                            self.init_user_thread();
+                        }
                     }
                 }
+            }
+            PromptEvent::Cancel => {
+                self.controller.cancel_running(tid);
             }
             PromptEvent::Submitted(text) => {
                 // Show the user message immediately in the response area
                 self.response_area_controller
                     .add_block(user_block(text.clone()));
 
-                self.controller.set_prompt(text);
-                let (model, thread) = self
-                    .controller
-                    .prepare_call(self.controller.current_model_name().unwrap().to_string());
-                let model_clone = model.unwrap().clone();
-                let resp_tx_clone = resp_tx.clone();
-                tokio::spawn(async move {
-                    model_clone.generate(&thread, resp_tx_clone).await;
-                });
+                self.controller.set_prompt(tid, text);
+                self.spawn_generate(tid, resp_tx);
             }
         }
     }
+
     fn redraw(&mut self, terminal: &mut Terminal<impl Backend>) {
         terminal.draw(|f| self.ui(f)).unwrap();
     }
@@ -362,9 +480,15 @@ fn register_models(controller: &mut controller::MessageController) -> Result<(),
 
         let openrouter_model_v4_flash = openrouter::OpenRouterBase::new(
             openrouter::OpenRouterModel::DeepSeekV4Flash,
-            openrouter_api_token,
+            openrouter_api_token.clone(),
         );
         controller.register_model(Arc::new(openrouter_model_v4_flash));
+
+        let openrouter_model_kimi_27 = openrouter::OpenRouterBase::new(
+            openrouter::OpenRouterModel::MoonShotAiKIMI27,
+            openrouter_api_token,
+        );
+        controller.register_model(Arc::new(openrouter_model_kimi_27));
         tracing::info!("Registered OpenRouter DeepSeekV4 model");
     }
     Ok(())

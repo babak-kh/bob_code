@@ -5,14 +5,15 @@ use super::model::{
     UserChatMessageRequest,
 };
 use crate::{
-    agent::openrouter::model::{FinishReason, ToolCall},
+    agent::openrouter::model::{FinishReason, ResponseUsage, ToolCall},
     models::{
         model::{ChatMessageResponse, LLMModel, ModelResponseErr},
         thread::Thread,
+        tool::Tool,
     },
     tool::{
-        ToolCallRequest, create_file_tool, edit_file_tool, fd_tool, list_files_tool, read_tool,
-        rg_tool,
+        ToolCallRequest, bash_tool, create_file_tool, edit_file_tool, fd_tool, list_files_tool,
+        read_tool, rg_tool,
     },
 };
 use async_trait::async_trait;
@@ -25,6 +26,8 @@ pub enum OpenRouterModel {
     DeepSeekV4Pro,
     DeepSeekV4Flash,
     DeepSeekR1,
+
+    MoonShotAiKIMI27,
 }
 
 impl OpenRouterModel {
@@ -34,6 +37,7 @@ impl OpenRouterModel {
             OpenRouterModel::DeepSeekV4Flash => "deepseek/deepseek-v4-flash",
 
             OpenRouterModel::DeepSeekR1 => "deepseek/deepseek-r1",
+            OpenRouterModel::MoonShotAiKIMI27 => "moonshotai/kimi-k2.7-code",
         }
     }
 }
@@ -59,14 +63,23 @@ struct ResponseContext {
     new_message: ChatMessageResponse,
     tool_call_aggregator: HashMap<usize, ToolCall>,
     finish_reason: Option<FinishReason>,
+    usage: Option<ResponseUsage>,
 }
 
 #[async_trait]
 impl LLMModel for OpenRouterBase {
-    async fn generate(&self, prompt: &Thread, resp_tx: broadcast::Sender<ChatMessageResponse>) {
+    async fn generate(
+        &self,
+        prompt: &Thread,
+        resp_tx: broadcast::Sender<ChatMessageResponse>,
+        tools: Vec<Tool>,
+    ) {
         let msg = {
             let mut msg: UserChatMessageRequest = prompt.into();
             msg.model = self.model_type.to_str().to_string();
+            if !tools.is_empty() {
+                msg.tools = Some(tools);
+            }
             msg
         };
         tracing::info!(
@@ -354,6 +367,10 @@ fn process_model_response(
             Some(into_tool_call(context.tool_call_aggregator.clone()).unwrap());
     }
     context.finish_reason = choice.finish_reason;
+    // Usage typically arrives on the final chunk alongside finish_reason.
+    if event.usage.is_some() {
+        context.usage = event.usage;
+    }
     Ok(())
 }
 
@@ -412,6 +429,12 @@ fn conclude_request(tx: broadcast::Sender<ChatMessageResponse>, mut ctx: Respons
         }
     }
     ctx.aggregated.done = true;
+    ctx.aggregated.usage = ctx.usage.map(|u| crate::models::model::UsageInfo {
+        prompt_tokens: Some(u.prompt_tokens as u64),
+        completion_tokens: Some(u.completion_tokens as u64),
+        total_tokens: Some(u.total_tokens as u64),
+        cost: u.cost,
+    });
     tx.send(ctx.aggregated).unwrap();
 }
 
@@ -471,14 +494,7 @@ impl From<&Thread> for UserChatMessageRequest {
                 })
                 .collect(),
             response_format: None,
-            tools: Some(vec![
-                read_tool(),
-                list_files_tool(),
-                create_file_tool(),
-                edit_file_tool(),
-                fd_tool(),
-                rg_tool(),
-            ]),
+            tools: None,
             stream: true,
             keep_alive: None,
             temperature: Some(1.0),

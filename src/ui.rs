@@ -3,7 +3,7 @@ use crate::components::text_area::{TextArea, panel_block};
 use crate::prompt::{ContentManager, PromptEvent};
 use crate::service::clipboard;
 use copypasta::ClipboardContext;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Borders, Paragraph, Wrap};
@@ -13,6 +13,8 @@ use ratatui::{Frame, layout::Rect};
 // PromptController
 // ---------------------------------------------------------------------------
 
+/// Minimum content lines shown in the prompt (always visible, even when empty).
+const PROMPT_MIN_LINES: usize = 2;
 /// Maximum content lines shown in the prompt before internal scroll kicks in.
 const PROMPT_MAX_LINES: usize = 5;
 /// Top + bottom border rows.
@@ -39,7 +41,11 @@ impl PromptController {
 
     /// Terminal rows needed to render the prompt (borders + up to 5 content lines).
     pub fn desired_height(&self) -> u16 {
-        let content = self.content.lines().len().clamp(1, PROMPT_MAX_LINES) as u16;
+        let content = self
+            .content
+            .lines()
+            .len()
+            .clamp(PROMPT_MIN_LINES, PROMPT_MAX_LINES) as u16;
         content + PROMPT_BORDER_ROWS
     }
 
@@ -50,12 +56,21 @@ impl PromptController {
                 self.content.insert_text(text);
                 None
             }
+            Event::Key(KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: KeyModifiers::NONE,
+                ..
+            }) => return Some(PromptEvent::Cancel),
             Event::Key(key) => self.handle_key(key),
             _ => None,
         }
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> Option<PromptEvent> {
+        // Ignore release events — only process Press and Repeat.
+        if key.kind == KeyEventKind::Release {
+            return None;
+        }
         match (key.code, key.modifiers) {
             // Submit: Enter; Shift+Enter inserts a newline
             (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) => self.content.new_line(),
@@ -110,14 +125,22 @@ impl PromptController {
 pub struct StatusLineController {
     model_name: String,
     gpu_info: String,
+    thread_id: String,
+    usage_info: Option<crate::models::model::UsageInfo>,
 }
 
 impl StatusLineController {
     pub fn new() -> Self {
         Self {
             model_name: String::new(),
+            thread_id: String::new(),
             gpu_info: "GPU: waiting…".to_string(),
+            usage_info: None,
         }
+    }
+
+    pub fn set_thread_id(&mut self, t_id: String) {
+        self.thread_id = t_id;
     }
 
     pub fn set_model_name(&mut self, name: String) {
@@ -128,8 +151,18 @@ impl StatusLineController {
         self.gpu_info = parse_nvidia_smi(&raw);
     }
 
+    pub fn set_usage_info(&mut self, usage: crate::models::model::UsageInfo) {
+        self.usage_info = Some(usage);
+    }
+
     pub fn render(&self, f: &mut Frame, area: Rect) {
         let mut spans: Vec<Span> = Vec::new();
+
+        spans.push(Span::styled(
+            " F1 help ",
+            Style::default().fg(Color::DarkGray),
+        ));
+        spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
 
         if !self.model_name.is_empty() {
             spans.push(Span::styled(
@@ -142,6 +175,39 @@ impl StatusLineController {
         spans.push(Span::styled(" ⬡ ", Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(
             self.gpu_info.clone(),
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        // Token / cost context info — only show if the backend reported it.
+        if let Some(ref u) = self.usage_info {
+            spans.push(Span::styled("  │", Style::default().fg(Color::DarkGray)));
+
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(p) = u.prompt_tokens {
+                parts.push(format!("↑{}", format_tokens(p)));
+            }
+            if let Some(c) = u.completion_tokens {
+                parts.push(format!("↓{}", format_tokens(c)));
+            }
+            if let Some(t) = u.total_tokens
+                && (u.prompt_tokens.is_none() || u.completion_tokens.is_none())
+            {
+                parts.push(format!("Σ{}", format_tokens(t)));
+            }
+
+            if let Some(cost) = u.cost {
+                parts.push(format!("${:.4}", cost));
+            }
+            if !parts.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {} ", parts.join("  ")),
+                    Style::default().fg(Color::Green),
+                ));
+            }
+        }
+
+        spans.push(Span::styled(
+            format!(" | id: {}", self.thread_id),
             Style::default().fg(Color::DarkGray),
         ));
 
@@ -166,6 +232,17 @@ fn parse_nvidia_smi(raw: &str) -> String {
         return data.trim().to_string();
     }
     raw.trim().to_string()
+}
+
+/// Format a token count with human-friendly suffixes (K, M).
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +310,10 @@ impl ResponseAreaController {
 
     pub fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::new();
     }
 
     /// Append a new block.

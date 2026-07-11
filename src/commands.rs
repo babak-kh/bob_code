@@ -7,6 +7,7 @@ use crate::service::commands::render_tree;
 pub enum Command {
     Model,
     Tree,
+    NewThread,
 }
 
 // ── Effects ────────────────────────────────────────────────────────────────────
@@ -22,6 +23,7 @@ pub enum CommandEffect {
         schema: PromptSchema,
         action: DialogAction,
     },
+    ClearThread,
 }
 
 /// What App should do when a dialog opened by a command is submitted.
@@ -39,6 +41,7 @@ impl App {
         match name {
             "models" => Some(Command::Model),
             "tree" => Some(Command::Tree),
+            "new" => Some(Command::NewThread),
             _ => None,
         }
     }
@@ -50,19 +53,24 @@ impl App {
         match command {
             Command::Model => {
                 let model_names = self.controller.get_model_names();
-                let schema = PromptSchema::new("Select a model").with_field(
-                    FieldSchema::single_choice("model", "Model", model_names),
-                );
+                let schema = PromptSchema::new("Select a model")
+                    .with_field(FieldSchema::single_choice("model", "Model", model_names));
                 CommandEffect::OpenDialog {
                     schema,
                     action: DialogAction::SelectModel,
                 }
             }
             Command::Tree => {
-                match self.controller.get_current_thread() {
+                let tid = self.current_thread_id;
+                match self.controller.get_thread(tid) {
                     Some(thread) => CommandEffect::ResponseArea(render_tree(thread).join("\n")),
                     None => CommandEffect::None,
                 }
+            }
+            Command::NewThread => {
+                // Cancel the old handler and remove the old thread.
+                self.controller.remove_thread(self.current_thread_id);
+                CommandEffect::ClearThread
             }
         }
     }
