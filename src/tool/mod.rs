@@ -1,10 +1,12 @@
 pub use crate::models::tool::{ToolCallRequest, ToolResult, ToolStructuredOutput};
 pub use bash::{bash_tool, bash_tool_run};
 pub use file::{create_file_tool, edit_file_tool, list_files_tool, read_tool};
+pub use http::{http_request_exec, http_request_tool};
 pub use search::{fd_tool, rg_tool};
 
 pub mod bash;
 pub mod file;
+pub mod http;
 pub mod search;
 
 use crate::models::tool::{Tool, ToolCatalogEntry};
@@ -108,6 +110,18 @@ pub async fn execute_tool(call: &ToolCallRequest) -> ToolResult {
                 structured: None,
             }
         }
+        "http_request" => {
+            let url = call.function.arguments["url"].as_str().unwrap_or("");
+            let method = call.function.arguments["method"].as_str().unwrap_or("GET");
+            let headers = call.function.arguments.get("headers");
+            let body = call.function.arguments["body"].as_str();
+            let timeout_secs = call.function.arguments["timeout_seconds"].as_u64();
+            let text = http_request_exec(url, method, headers, body, timeout_secs).await;
+            ToolResult {
+                text,
+                structured: None,
+            }
+        }
         _ => ToolResult {
             text: format!("Unknown tool: {:?}", call.function.name),
             structured: None,
@@ -147,6 +161,11 @@ pub fn tools_catalog() -> Vec<ToolCatalogEntry> {
             description: "Run bash command on OS. command and arguments are passed to bash -c"
                 .to_string(),
         },
+        ToolCatalogEntry {
+            name: "http_request".to_string(),
+            description: "Perform an HTTP request to a public URL. Supports GET/POST/PUT/DELETE. Internal/private IPs are blocked."
+                .to_string(),
+        },
     ]
 }
 
@@ -159,5 +178,6 @@ pub fn default_tools() -> Vec<Tool> {
         fd_tool(),
         rg_tool(),
         bash_tool(),
+        http_request_tool(),
     ]
 }

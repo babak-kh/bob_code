@@ -323,12 +323,17 @@ impl ResponseAreaController {
     /// per token.  A different kind always starts a new block.
     pub fn add_block(&mut self, mut block: Box<dyn ResponseBlock>) {
         // Streaming merge: same kind as the last block → append in place.
+        // Skip merge when the incoming block has structured data (e.g. a diff)
+        // that must be rendered as its own block.
         let kind = block.block_kind();
-        if let Some(last) = self.blocks.last_mut()
-            && last.block_kind() == kind
+        let has_structured = block.has_structured_data();
+        if !has_structured
+            && self.blocks.last().is_some_and(|last| last.block_kind() == kind)
         {
             let text = block.text().to_string();
-            last.append_text(&text);
+            if let Some(last) = self.blocks.last_mut() {
+                last.append_text(&text);
+            }
             return;
         }
 

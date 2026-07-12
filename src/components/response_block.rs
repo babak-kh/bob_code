@@ -69,6 +69,12 @@ pub trait ResponseBlock: Send + Sync {
     fn is_collapsible(&self) -> bool {
         false
     }
+
+    /// Whether this block carries structured display data (e.g. a diff)
+    /// that should prevent streaming merge with the previous block.
+    fn has_structured_data(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +338,9 @@ impl ResponseBlock for ToolBlock {
     }
     fn is_collapsible(&self) -> bool {
         true
+    }
+    fn has_structured_data(&self) -> bool {
+        self.diff.is_some()
     }
 }
 
